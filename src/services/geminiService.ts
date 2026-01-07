@@ -10,7 +10,9 @@ import { SmartSequenceItem, VideoGenerationMode } from "@/types";
 const isExternalModel = (model: string): boolean => {
     // Veo 外部API模型 (通过统一API调用)
     if (model.startsWith('veo') && !model.includes('generate-preview')) return true;
-    // Seedream 模型
+    // Seedance 视频模型 (火山引擎)
+    if (model.includes('seedance')) return true;
+    // Seedream 图像模型 (火山引擎)
     if (model.includes('seedream') || model.includes('doubao')) return true;
     // Nano-banana 模型
     if (model.includes('nano-banana')) return true;
@@ -20,8 +22,9 @@ const isExternalModel = (model: string): boolean => {
 /**
  * 判断模型类型
  */
-const getExternalModelType = (model: string): 'veo' | 'seedream' | 'nano-banana' | 'gemini' => {
+const getExternalModelType = (model: string): 'veo' | 'seedance' | 'seedream' | 'nano-banana' | 'gemini' => {
     if (model.startsWith('veo') && !model.includes('generate-preview')) return 'veo';
+    if (model.includes('seedance')) return 'seedance';
     if (model.includes('seedream') || model.includes('doubao')) return 'seedream';
     if (model.includes('nano-banana')) return 'nano-banana';
     return 'gemini';
@@ -387,7 +390,8 @@ export const generateImageFromText = async (
     if (isExternalModel(model)) {
         const modelType = getExternalModelType(model);
 
-        if (modelType === 'seedream' || modelType === 'nano-banana') {
+        if (modelType === 'seedream') {
+            // Seedream：单次请求，通过提示词和 sequential_image_generation 控制数量
             try {
                 const response = await fetch('/api/studio/image', {
                     method: 'POST',
@@ -413,7 +417,44 @@ export const generateImageFromText = async (
                 }
                 throw new Error('未返回图像');
             } catch (e: any) {
-                console.error(`[${modelType}] Image Gen Error:`, e);
+                console.error(`[seedream] Image Gen Error:`, e);
+                throw new Error(getErrorMessage(e));
+            }
+        }
+
+        if (modelType === 'nano-banana') {
+            // Nano-banana：多次请求分别生成，并行执行
+            try {
+                const requests = Array.from({ length: count }, () =>
+                    fetch('/api/studio/image', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            prompt,
+                            model,
+                            images: inputImages,
+                            aspectRatio: options.aspectRatio,
+                            n: 1, // 每次只生成1张
+                            size: options.resolution,
+                        }),
+                    }).then(async (res) => {
+                        if (!res.ok) {
+                            const errorData = await res.json().catch(() => ({}));
+                            throw new Error(errorData.error || `API错误: ${res.status}`);
+                        }
+                        const result = await res.json();
+                        return result.images?.[0] || null;
+                    })
+                );
+
+                const results = await Promise.all(requests);
+                const validImages = results.filter(Boolean) as string[];
+                if (validImages.length > 0) {
+                    return validImages;
+                }
+                throw new Error('未返回图像');
+            } catch (e: any) {
+                console.error(`[nano-banana] Image Gen Error:`, e);
                 throw new Error(getErrorMessage(e));
             }
         }
@@ -480,13 +521,17 @@ export const generateVideo = async (
     videoInput?: any,
     referenceImages?: string[]
 ): Promise<{ uri: string, isFallbackImage?: boolean, videoMetadata?: any, uris?: string[] }> => {
-    // --- 外部Veo API路由 ---
-    if (isExternalModel(model) && getExternalModelType(model) === 'veo') {
+    const modelType = getExternalModelType(model);
+
+    // --- 外部视频API路由 (Veo / Seedance) ---
+    if (isExternalModel(model) && (modelType === 'veo' || modelType === 'seedance')) {
         try {
             // 准备图片参数
             const images: string[] = [];
             if (inputImageBase64) images.push(inputImageBase64);
             if (referenceImages) images.push(...referenceImages);
+
+            console.log(`[${modelType}] Starting video generation with model: ${model}`);
 
             const response = await fetch('/api/studio/video', {
                 method: 'POST',
@@ -517,7 +562,7 @@ export const generateVideo = async (
             }
             throw new Error('未返回视频URL');
         } catch (e: any) {
-            console.error('[External Veo] Video Gen Error:', e);
+            console.error(`[${modelType}] Video Gen Error:`, e);
             // 回退到图像生成
             try {
                 const fallbackPrompt = "Cinematic movie still, " + prompt;

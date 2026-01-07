@@ -3,7 +3,8 @@
  *
  * 支持的模型:
  * - Veo (Google视频生成) - veo2, veo3, veo3.1 系列
- * - Seedream (即梦4绘图) - doubao-seedream-4-5-251128
+ * - Seedance (火山引擎视频生成) - seedance-1.5-pro, seedance-1.0-pro, seedance-1.0-lite
+ * - Seedream (即梦绘图) - doubao-seedream-4-5-250608, doubao-seedream-4-0-t2i, doubao-seedream-3-0-t2i
  * - Nano-banana (Gemini绘图优化) - nano-banana, nano-banana-hd, nano-banana-2
  */
 
@@ -245,12 +246,21 @@ export const generateSeedreamImage = async (options: SeedreamGenerateOptions): P
     };
 
     if (options.images && options.images.length > 0) body.image = options.images;
-    if (options.n) body.n = String(options.n);
     if (options.size) body.size = options.size;
     if (options.responseFormat) body.response_format = options.responseFormat;
-    if (options.sequentialImageGeneration) body.sequential_image_generation = options.sequentialImageGeneration;
-    if (options.watermark !== undefined) body.watermark = options.watermark;
+    body.watermark = false; // Seedream 4.5: 始终不添加水印
     if (options.stream !== undefined) body.stream = options.stream;
+
+    // Seedream 4.5 组图功能：通过提示词控制数量
+    if (options.n && options.n > 1) {
+        body.sequential_image_generation = 'auto';
+        body.sequential_image_generation_options = {
+            max_images: Math.min(options.n, 15)
+        };
+        body.prompt = `${options.prompt} ${options.n}张`;
+    } else {
+        body.sequential_image_generation = 'disabled';
+    }
 
     const response = await fetch(`${baseUrl}/v1/images/generations`, {
         method: 'POST',
@@ -298,6 +308,7 @@ export const editSeedreamImage = async (
     if (options?.n) formData.append('n', String(options.n));
     if (options?.size) formData.append('size', options.size);
     formData.append('response_format', 'url');
+    formData.append('watermark', 'false'); // Seedream 4.5: 始终不添加水印
 
     const response = await fetch(`${baseUrl}/v1/images/edits`, {
         method: 'POST',

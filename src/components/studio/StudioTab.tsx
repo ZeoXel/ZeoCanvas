@@ -509,7 +509,7 @@ export default function StudioTab() {
           model: type === NodeType.VIDEO_GENERATOR ? 'veo3.1' :
                  type === NodeType.VIDEO_ANALYZER ? 'gemini-2.5-flash' :
                  type === NodeType.AUDIO_GENERATOR ? defaultAudioModel :
-                 type.includes('IMAGE') ? 'nano-banana' :
+                 type.includes('IMAGE') ? 'doubao-seedream-4-5-251128' :
                  'gemini-2.5-flash',
           generationMode: type === NodeType.VIDEO_GENERATOR ? 'DEFAULT' : undefined,
           // 音频节点默认配置
@@ -1001,34 +1001,21 @@ export default function StudioTab() {
                       console.warn("Storyboard planning failed", e);
                   }
                }
-              // 判断是否需要批量生产（创建新节点）
-              // 条件：有参考图（图生图）OR 原节点已有生成结果（文生图二次点击）
-              const hasReferenceImage = !!node.data.image;
-              const hasExistingResult = hasReferenceImage || (node.data.images && node.data.images.length > 0);
+              // 判断场景：文生图 vs 图生图
+              // 图生图条件：有上游图片输入 (inputImages.length > 0)
+              const isImageToImage = inputImages.length > 0;
               let newNodeId: string | null = null;
 
-              if (hasExistingResult) {
-                  // 批量生产模式：检查是否已有自动连接的下游节点
+              if (isImageToImage) {
+                  // 图生图场景：创建新节点呈现结果（组图统一在一个节点中）
                   newNodeId = `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
                   const nodeWidth = node.width || 420;
                   const [rw, rh] = (node.data.aspectRatio || '16:9').split(':').map(Number);
                   const nodeHeight = node.height || (nodeWidth * rh / rw);
 
-                  // 查找当前节点已有的自动连接下游节点
-                  const existingAutoConns = connectionsRef.current.filter(c => c.from === id && c.isAuto);
-                  const firstAutoChildId = existingAutoConns.length > 0 ? existingAutoConns[0].to : null;
-                  const firstAutoChild = firstAutoChildId ? nodesRef.current.find(n => n.id === firstAutoChildId) : null;
-
-                  let newX: number, newY: number;
-                  if (!firstAutoChild) {
-                      // 第一次批量生产：向右排布
-                      const startX = node.x + nodeWidth + 80;
-                      ({ x: newX, y: newY } = findNonOverlappingPosition(startX, node.y, nodeWidth, nodeHeight, nodesRef.current, 'right'));
-                  } else {
-                      // 后续批量生产：在第一个结果节点上方排布（间距为0）
-                      const startY = firstAutoChild.y - nodeHeight;
-                      ({ x: newX, y: newY } = findNonOverlappingPosition(firstAutoChild.x, startY, nodeWidth, nodeHeight, nodesRef.current, 'up'));
-                  }
+                  // 向右排布新节点
+                  const startX = node.x + nodeWidth + 80;
+                  const { x: newX, y: newY } = findNonOverlappingPosition(startX, node.y, nodeWidth, nodeHeight, nodesRef.current, 'right');
 
                   const newNode: AppNode = {
                       id: newNodeId,
@@ -1037,7 +1024,7 @@ export default function StudioTab() {
                       y: newY,
                       width: nodeWidth,
                       height: nodeHeight,
-                      title: hasReferenceImage ? '编辑结果' : '生成结果',
+                      title: '生成结果',
                       status: NodeStatus.WORKING,
                       data: {
                           ...node.data,
@@ -1055,18 +1042,20 @@ export default function StudioTab() {
               }
 
               try {
-                  const res = await generateImageFromText(prompt, node.data.model || 'nano-banana', inputImages, { aspectRatio: node.data.aspectRatio || '16:9', resolution: node.data.resolution, count: node.data.imageCount });
+                  // 获取组图数量（默认1张）
+                  const imageCount = node.data.imageCount || 1;
+                  const res = await generateImageFromText(prompt, node.data.model || 'doubao-seedream-4-5-251128', inputImages, { aspectRatio: node.data.aspectRatio || '1:1', resolution: node.data.resolution, count: imageCount });
 
-                  if (hasExistingResult && newNodeId) {
-                      // 更新新节点为成功并填入结果
-                      handleNodeUpdate(newNodeId, { image: res[0], images: res });
+                  if (isImageToImage && newNodeId) {
+                      // 图生图：更新新节点，组图结果统一呈现
+                      handleNodeUpdate(newNodeId, { image: res[0], images: res, imageCount });
                       setNodes(p => p.map(n => n.id === newNodeId ? { ...n, status: NodeStatus.SUCCESS } : n));
                   } else {
-                      // 首次文生图：结果在原节点显示
-                      handleNodeUpdate(id, { image: res[0], images: res });
+                      // 文生图：结果直接在初始节点显示，组图结果统一呈现
+                      handleNodeUpdate(id, { image: res[0], images: res, imageCount });
                   }
               } catch (imgErr: any) {
-                  if (hasExistingResult && newNodeId) {
+                  if (isImageToImage && newNodeId) {
                       // 新节点显示错误
                       handleNodeUpdate(newNodeId, { error: imgErr.message });
                       setNodes(p => p.map(n => n.id === newNodeId ? { ...n, status: NodeStatus.ERROR } : n));

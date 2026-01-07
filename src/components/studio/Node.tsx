@@ -2,7 +2,7 @@
 
 // ... existing imports
 import { AppNode, NodeStatus, NodeType, AudioGenerationMode } from '@/types';
-import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2 } from 'lucide-react';
+import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2, Grid3X3 } from 'lucide-react';
 import { VideoModeSelector, SceneDirectorOverlay } from './VideoNodeModules';
 import { AudioNodePanel } from './AudioNodePanel';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
@@ -47,6 +47,61 @@ const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
 const IMAGE_COUNTS = [1, 2, 3, 4];
 const VIDEO_COUNTS = [1, 2, 3, 4];
+
+// Seedream 比例到尺寸映射
+const SEEDREAM_SIZE_MAP: Record<string, string> = {
+    '1:1': '2048x2048',
+    '4:3': '2304x1728',
+    '3:4': '1728x2304',
+    '16:9': '2560x1440',
+    '9:16': '1440x2560',
+};
+
+// 图像模型参数配置映射
+const IMAGE_MODEL_CONFIG: Record<string, {
+    supportsAspectRatio: boolean;
+    supportsResolution: boolean;
+    supportsMultiImage: boolean;
+    aspectRatios?: string[];
+    resolutions?: string[];
+    defaultAspectRatio?: string;
+    defaultResolution?: string;
+    sizeMap?: Record<string, string>;  // 比例到尺寸映射
+}> = {
+    'doubao-seedream-4-5-251128': {
+        supportsAspectRatio: true,
+        supportsResolution: false,
+        supportsMultiImage: true,
+        aspectRatios: ['1:1', '4:3', '3:4', '16:9', '9:16'],
+        defaultAspectRatio: '1:1',
+        sizeMap: SEEDREAM_SIZE_MAP,
+    },
+    'nano-banana': {
+        supportsAspectRatio: true,
+        supportsResolution: false,
+        supportsMultiImage: true,
+        aspectRatios: ['1:1', '3:4', '4:3', '9:16', '16:9'],
+        defaultAspectRatio: '1:1',
+    },
+    'nano-banana-pro': {
+        supportsAspectRatio: true,
+        supportsResolution: false,
+        supportsMultiImage: true,
+        aspectRatios: ['1:1', '3:4', '4:3', '9:16', '16:9'],
+        defaultAspectRatio: '1:1',
+    },
+};
+
+// 获取模型配置
+const getImageModelConfig = (model: string) => {
+    return IMAGE_MODEL_CONFIG[model] || {
+        supportsAspectRatio: true,
+        supportsResolution: false,
+        supportsMultiImage: false,
+        aspectRatios: IMAGE_ASPECT_RATIOS,
+        defaultAspectRatio: '16:9',
+    };
+};
 const GLASS_PANEL = "bg-[#ffffff]/95 backdrop-blur-2xl border border-slate-300 shadow-2xl";
 const DEFAULT_NODE_WIDTH = 420;
 const DEFAULT_FIXED_HEIGHT = 360;
@@ -360,7 +415,7 @@ const NodeComponent: React.FC<NodeProps> = ({
 
     const handleMouseEnter = () => {
         isHoveringRef.current = true;
-        if ((node.data.images?.length ?? 0) > 1 || (node.data.videoUris && node.data.videoUris.length > 1)) setShowImageGrid(true);
+        // 移除悬停自动展开宫格，改为点击展开
 
         // Play Video on Hover
         if (mediaRef.current instanceof HTMLVideoElement) {
@@ -370,7 +425,7 @@ const NodeComponent: React.FC<NodeProps> = ({
 
     const handleMouseLeave = () => {
         isHoveringRef.current = false;
-        setShowImageGrid(false);
+        // 移除悬停关闭宫格，由点击控制
 
         // Pause Video on Leave
         if (mediaRef.current instanceof HTMLVideoElement) {
@@ -731,24 +786,18 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 style={{ filter: showImageGrid ? 'blur(10px)' : 'none' }} // Pass Style
                             />
                         }
-                        {node.status === NodeStatus.ERROR && <div className="absolute inset-0 bg-white/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20"><AlertCircle className="text-red-500 mb-2" /><span className="text-xs text-red-200">{node.data.error}</span></div>}
-                        {showImageGrid && (node.data.images || node.data.videoUris) && (
-                            <div className="absolute inset-0 bg-white/80 z-10 grid grid-cols-2 gap-2 p-2 animate-in fade-in duration-200">
-                                {node.data.images ? node.data.images.map((img, idx) => (
-                                    <div key={idx} className={`relative rounded-lg overflow-hidden cursor-pointer border-2 bg-white ${img === node.data.image ? 'border-blue-500' : 'border-transparent hover:border-slate-2000'}`} onClick={(e) => { e.stopPropagation(); onUpdate(node.id, { image: img }); }}>
-                                        <img src={img} className="w-full h-full object-cover" />
-                                    </div>
-                                )) : node.data.videoUris?.map((uri, idx) => (
-                                    <div key={idx} className={`relative rounded-lg overflow-hidden cursor-pointer border-2 bg-white ${uri === node.data.videoUri ? 'border-blue-500' : 'border-transparent hover:border-slate-2000'}`} onClick={(e) => { e.stopPropagation(); onUpdate(node.id, { videoUri: uri }); }}>
-                                        {uri ? (
-                                            <SecureVideo src={uri} className="w-full h-full object-cover bg-white" muted loop autoPlay />
-                                        ) : (
-                                            <div className="w-full h-full flex items-center justify-center bg-slate-50 text-xs text-slate-500">Failed</div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
+                        {/* 组图数量徽章 - 右上角显示 */}
+                        {node.data.images && node.data.images.length > 1 && !showImageGrid && (
+                            <button
+                                className="absolute top-3 right-3 z-30 flex items-center gap-1.5 px-2.5 py-1.5 bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 shadow-lg hover:bg-white hover:shadow-xl hover:scale-105 transition-all duration-200 cursor-pointer group/badge"
+                                onClick={(e) => { e.stopPropagation(); setShowImageGrid(true); }}
+                                title="点击查看全部结果"
+                            >
+                                <Grid3X3 size={12} className="text-slate-500 group-hover/badge:text-blue-500" />
+                                <span className="text-xs font-bold text-slate-600 group-hover/badge:text-blue-600">{node.data.images.length}</span>
+                            </button>
                         )}
+                        {node.status === NodeStatus.ERROR && <div className="absolute inset-0 bg-white/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20"><AlertCircle className="text-red-500 mb-2" /><span className="text-xs text-red-200">{node.data.error}</span></div>}
                         {generationMode === 'CUT' && node.data.croppedFrame && <div className="absolute top-4 right-4 w-24 aspect-video bg-white/90 rounded-lg border border-purple-500/50 shadow-xl overflow-hidden z-20 hover:scale-150 transition-transform origin-top-right opacity-0 group-hover:opacity-100 transition-opacity duration-300"><img src={node.data.croppedFrame} className="w-full h-full object-cover" /></div>}
                         {generationMode === 'CUT' && !node.data.croppedFrame && hasInputs && inputAssets?.some(a => a.src) && (<div className="absolute top-4 right-4 w-24 aspect-video bg-white/90 rounded-lg border border-purple-500/30 border-dashed shadow-xl overflow-hidden z-20 hover:scale-150 transition-transform origin-top-right flex flex-col items-center justify-center group/preview opacity-0 group-hover:opacity-100 transition-opacity duration-300"><div className="absolute inset-0 bg-purple-500/10 z-10"></div>{(() => { const asset = inputAssets!.find(a => a.src); if (asset?.type === 'video') { return <SecureVideo src={asset.src} className="w-full h-full object-cover opacity-60 bg-white" muted autoPlay />; } else { return <img src={asset?.src} className="w-full h-full object-cover opacity-60 bg-white" />; } })()}<span className="absolute z-20 text-[8px] font-bold text-purple-500 bg-white/90 px-1 rounded">分镜参考</span></div>)}
                     </>
@@ -805,23 +854,23 @@ const NodeComponent: React.FC<NodeProps> = ({
 
         let models: { l: string, v: string, group?: string }[] = [];
         if (node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) {
-            // 视频生成模型 - Veo 3.1 系列
+            // 视频生成模型
             models = [
+                // Veo 3.1 系列
                 { l: 'Veo 3.1', v: 'veo3.1' },
                 { l: 'Veo 3.1 Pro', v: 'veo3.1-pro' },
                 { l: 'Veo 3.1 多图参考', v: 'veo3.1-components' },
+                // Seedance (火山引擎)
+                { l: 'Seedance 1.5 Pro', v: 'doubao-seedance-1-5-pro-251215' },
             ];
         } else if (node.type === NodeType.VIDEO_ANALYZER) {
             models = [{ l: 'Gemini 2.5 Flash', v: 'gemini-2.5-flash' }];
         } else {
-            // 图像生成模型 (根据接入文档)
+            // 图像生成模型
             models = [
-                // Nano-banana 系列 (推荐)
-                { l: 'Nano Banana (推荐)', v: 'nano-banana' },
-                { l: 'Nano Banana HD', v: 'nano-banana-hd' },
-                { l: 'Nano Banana 2 (4K)', v: 'nano-banana-2' },
-                // Seedream (即梦4)
-                { l: '即梦4 (Seedream)', v: 'doubao-seedream-4-5-251128' },
+                { l: 'Seedream 4.5', v: 'doubao-seedream-4-5-251128' },
+                { l: 'Nano Banana', v: 'nano-banana' },
+                { l: 'Nano Banana Pro', v: 'nano-banana-pro' },
             ];
         }
 
@@ -845,8 +894,67 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400"><span>{currentModelLabel}</span><ChevronDown size={10} /></div>
                                 <div className="absolute bottom-full left-0 pb-2 w-40 opacity-0 translate-y-2 pointer-events-none group-hover/model:opacity-100 group-hover/model:translate-y-0 group-hover/model:pointer-events-auto transition-all duration-200 z-[200]"><div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">{models.map(m => (<div key={m.v} onClick={() => onUpdate(node.id, { model: m.v })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.model === m.v ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{m.l}</div>))}</div></div>
                             </div>
-                            {node.type !== NodeType.VIDEO_ANALYZER && (<div className="relative group/ratio"><div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400"><Scaling size={12} /><span>{node.data.aspectRatio || '16:9'}</span></div><div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/ratio:opacity-100 group-hover/ratio:translate-y-0 group-hover/ratio:pointer-events-auto transition-all duration-200 z-[200]"><div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">{(node.type.includes('VIDEO') ? VIDEO_ASPECT_RATIOS : IMAGE_ASPECT_RATIOS).map(r => (<div key={r} onClick={() => handleAspectRatioSelect(r)} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.aspectRatio === r ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{r}</div>))}</div></div></div>)}
-                            {(node.type.includes('IMAGE') || node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) && (<div className="relative group/resolution"><div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400"><Monitor size={12} /><span>{node.data.resolution || (node.type.includes('IMAGE') ? '1k' : '720p')}</span></div><div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/resolution:opacity-100 group-hover/resolution:translate-y-0 group-hover/resolution:pointer-events-auto transition-all duration-200 z-[200]"><div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">{(node.type.includes('IMAGE') ? IMAGE_RESOLUTIONS : VIDEO_RESOLUTIONS).map(r => (<div key={r} onClick={() => onUpdate(node.id, { resolution: r })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.resolution === r ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{r}</div>))}</div></div></div>)}
+                            {/* 比例选择 - 根据模型配置显示 */}
+                            {(() => {
+                                const isImageNode = node.type.includes('IMAGE');
+                                const modelConfig = isImageNode ? getImageModelConfig(node.data.model || '') : null;
+                                const showAspectRatio = node.type !== NodeType.VIDEO_ANALYZER && (!isImageNode || modelConfig?.supportsAspectRatio);
+                                const aspectRatios = isImageNode && modelConfig?.aspectRatios ? modelConfig.aspectRatios : (node.type.includes('VIDEO') ? VIDEO_ASPECT_RATIOS : IMAGE_ASPECT_RATIOS);
+                                const defaultRatio = modelConfig?.defaultAspectRatio || '16:9';
+
+                                return showAspectRatio && (
+                                    <div className="relative group/ratio">
+                                        <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400">
+                                            <Scaling size={12} /><span>{node.data.aspectRatio || defaultRatio}</span>
+                                        </div>
+                                        <div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/ratio:opacity-100 group-hover/ratio:translate-y-0 group-hover/ratio:pointer-events-auto transition-all duration-200 z-[200]">
+                                            <div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">
+                                                {aspectRatios.map(r => (
+                                                    <div key={r} onClick={() => handleAspectRatioSelect(r)} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.aspectRatio === r ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{r}</div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                            {/* 分辨率选择 - 根据模型配置显示 */}
+                            {(() => {
+                                const isImageNode = node.type.includes('IMAGE');
+                                const modelConfig = isImageNode ? getImageModelConfig(node.data.model || '') : null;
+                                const showResolution = isImageNode ? modelConfig?.supportsResolution : (node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY);
+                                const resolutions = isImageNode && modelConfig?.resolutions ? modelConfig.resolutions : (node.type.includes('IMAGE') ? IMAGE_RESOLUTIONS : VIDEO_RESOLUTIONS);
+                                const defaultRes = modelConfig?.defaultResolution || (node.type.includes('IMAGE') ? '1k' : '720p');
+
+                                return showResolution && (
+                                    <div className="relative group/resolution">
+                                        <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400">
+                                            <Monitor size={12} /><span>{node.data.resolution || defaultRes}</span>
+                                        </div>
+                                        <div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/resolution:opacity-100 group-hover/resolution:translate-y-0 group-hover/resolution:pointer-events-auto transition-all duration-200 z-[200]">
+                                            <div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">
+                                                {resolutions.map(r => (
+                                                    <div key={r} onClick={() => onUpdate(node.id, { resolution: r })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.resolution === r ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{r}</div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                            {/* 组图数量选择 - 仅图像生成节点显示 */}
+                            {node.type === NodeType.IMAGE_GENERATOR && (
+                                <div className="relative group/count">
+                                    <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400">
+                                        <Grid3X3 size={12} /><span>{node.data.imageCount || 1}张</span>
+                                    </div>
+                                    <div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/count:opacity-100 group-hover/count:translate-y-0 group-hover/count:pointer-events-auto transition-all duration-200 z-[200]">
+                                        <div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">
+                                            {IMAGE_COUNTS.map(c => (
+                                                <div key={c} onClick={() => onUpdate(node.id, { imageCount: c })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${(node.data.imageCount || 1) === c ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{c}张</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                         <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-black hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}<span>{isWorking ? '生成中...' : '生成'}</span></button>
                     </div>
@@ -856,27 +964,93 @@ const NodeComponent: React.FC<NodeProps> = ({
     };
 
     const isInteracting = isDragging || isResizing || isGroupDragging;
+
+    // 组图宫格计算
+    const gridItems = node.data.images || node.data.videoUris || [];
+    const hasGrid = gridItems.length > 1;
+    const gridCols = 2;
+    const gridRows = Math.ceil(gridItems.length / gridCols);
+    const gap = 4;
+    const gridWidth = gridCols * nodeWidth + (gridCols - 1) * gap;
+    const gridHeight = gridRows * nodeHeight + (gridRows - 1) * gap;
+
     return (
-        <div
-            className={`absolute rounded-[24px] group ${isSelected ? 'ring-2 ring-blue-300/60 shadow-[0_20px_60px_rgba(59,130,246,0.15)]' : 'ring-1 ring-slate-200/80 hover:ring-blue-200/60'}`}
-            style={{
-                left: node.x, top: node.y, width: nodeWidth, height: nodeHeight,
-                zIndex: isSelected ? 50 : 10,
-                background: isSelected ? 'rgba(255, 255, 255, 0.96)' : 'rgba(250, 250, 255, 0.9)',
-                transition: isInteracting ? 'none' : 'all 0.5s cubic-bezier(0.32, 0.72, 0, 1)',
-                backdropFilter: isInteracting ? 'none' : 'blur(18px)',
-                boxShadow: isInteracting ? 'none' : undefined,
-                willChange: isInteracting ? 'left, top, width, height' : 'auto'
-            }}
-            onMouseDown={(e) => onNodeMouseDown(e, node.id)} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} onContextMenu={(e) => onNodeContextMenu(e, node.id)}
-        >
-            {renderTopBar()}
-            <div className={`absolute -left-3 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center transition-all duration-300 hover:scale-125 cursor-crosshair z-50 shadow-md ${isConnecting ? 'ring-2 ring-cyan-400 animate-pulse' : ''}`} onMouseDown={(e) => onPortMouseDown(e, node.id, 'input')} onMouseUp={(e) => onPortMouseUp(e, node.id, 'input')} title="Input"><Plus size={10} strokeWidth={3} className="text-slate-400" /></div>
-            <div className={`absolute -right-3 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center transition-all duration-300 hover:scale-125 cursor-crosshair z-50 shadow-md ${isConnecting ? 'ring-2 ring-purple-400 animate-pulse' : ''}`} onMouseDown={(e) => onPortMouseDown(e, node.id, 'output')} onMouseUp={(e) => onPortMouseUp(e, node.id, 'output')} title="Output"><Plus size={10} strokeWidth={3} className="text-slate-400" /></div>
-            <div className="w-full h-full flex flex-col relative rounded-[24px] overflow-hidden bg-white"><div className="flex-1 min-h-0 relative bg-white">{renderMediaContent()}</div></div>
-            {renderBottomPanel()}
-            <div className="absolute -bottom-3 -right-3 w-6 h-6 flex items-center justify-center cursor-nwse-resize text-slate-500 hover:text-slate-900 transition-colors opacity-0 group-hover:opacity-100 z-50" onMouseDown={(e) => onResizeMouseDown(e, node.id, nodeWidth, nodeHeight)}><div className="w-1.5 h-1.5 rounded-full bg-current" /></div>
-        </div>
+        <>
+            <div
+                className={`absolute rounded-[24px] group ${isSelected ? 'ring-2 ring-blue-300/60 shadow-[0_20px_60px_rgba(59,130,246,0.15)]' : 'ring-1 ring-slate-200/80 hover:ring-blue-200/60'}`}
+                style={{
+                    left: node.x, top: node.y, width: nodeWidth, height: nodeHeight,
+                    zIndex: isSelected ? 50 : 10,
+                    background: isSelected ? 'rgba(255, 255, 255, 0.96)' : 'rgba(250, 250, 255, 0.9)',
+                    transition: isInteracting ? 'none' : 'all 0.5s cubic-bezier(0.32, 0.72, 0, 1)',
+                    backdropFilter: isInteracting ? 'none' : 'blur(18px)',
+                    boxShadow: isInteracting ? 'none' : undefined,
+                    willChange: isInteracting ? 'left, top, width, height' : 'auto'
+                }}
+                onMouseDown={(e) => onNodeMouseDown(e, node.id)} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)} onContextMenu={(e) => onNodeContextMenu(e, node.id)}
+            >
+                {renderTopBar()}
+                <div className={`absolute -left-3 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center transition-all duration-300 hover:scale-125 cursor-crosshair z-50 shadow-md ${isConnecting ? 'ring-2 ring-cyan-400 animate-pulse' : ''}`} onMouseDown={(e) => onPortMouseDown(e, node.id, 'input')} onMouseUp={(e) => onPortMouseUp(e, node.id, 'input')} title="Input"><Plus size={10} strokeWidth={3} className="text-slate-400" /></div>
+                <div className={`absolute -right-3 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center transition-all duration-300 hover:scale-125 cursor-crosshair z-50 shadow-md ${isConnecting ? 'ring-2 ring-purple-400 animate-pulse' : ''}`} onMouseDown={(e) => onPortMouseDown(e, node.id, 'output')} onMouseUp={(e) => onPortMouseUp(e, node.id, 'output')} title="Output"><Plus size={10} strokeWidth={3} className="text-slate-400" /></div>
+                <div className="w-full h-full flex flex-col relative rounded-[24px] overflow-hidden bg-white"><div className="flex-1 min-h-0 relative bg-white">{renderMediaContent()}</div></div>
+                {renderBottomPanel()}
+                <div className="absolute -bottom-3 -right-3 w-6 h-6 flex items-center justify-center cursor-nwse-resize text-slate-500 hover:text-slate-900 transition-colors opacity-0 group-hover:opacity-100 z-50" onMouseDown={(e) => onResizeMouseDown(e, node.id, nodeWidth, nodeHeight)}><div className="w-1.5 h-1.5 rounded-full bg-current" /></div>
+            </div>
+            {/* 组图宫格 - 始终渲染，CSS控制显隐 */}
+            {hasGrid && (
+                <div
+                    className="absolute bg-white rounded-[24px] shadow-2xl transition-all duration-200"
+                    style={{
+                        left: node.x,
+                        top: node.y,
+                        width: gridWidth,
+                        height: gridHeight,
+                        zIndex: showImageGrid ? 200 : -1,
+                        opacity: showImageGrid ? 1 : 0,
+                        pointerEvents: showImageGrid ? 'auto' : 'none',
+                    }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                >
+                    <button
+                        className="absolute top-3 right-3 z-10 w-7 h-7 flex items-center justify-center bg-black/50 hover:bg-black/70 rounded-full transition-colors"
+                        onClick={() => setShowImageGrid(false)}
+                    >
+                        <X size={14} className="text-white" />
+                    </button>
+                    <div className="w-full h-full grid grid-cols-2" style={{ gap }}>
+                        {node.data.images ? node.data.images.map((img, idx) => (
+                            <div
+                                key={idx}
+                                className={`relative overflow-hidden cursor-pointer rounded-[20px] ${img === node.data.image ? 'ring-4 ring-blue-500 ring-inset' : 'hover:brightness-95'} transition-all`}
+                                style={{ width: nodeWidth, height: nodeHeight }}
+                                onClick={() => { onUpdate(node.id, { image: img }); setShowImageGrid(false); }}
+                            >
+                                <img src={img} className="w-full h-full object-cover" />
+                                {img === node.data.image && (
+                                    <div className="absolute top-2 left-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow">
+                                        <CheckCircle size={12} className="text-white" />
+                                    </div>
+                                )}
+                            </div>
+                        )) : node.data.videoUris?.map((uri, idx) => (
+                            <div
+                                key={idx}
+                                className={`relative overflow-hidden cursor-pointer rounded-[20px] ${uri === node.data.videoUri ? 'ring-4 ring-blue-500 ring-inset' : 'hover:brightness-95'} transition-all`}
+                                style={{ width: nodeWidth, height: nodeHeight }}
+                                onClick={() => { onUpdate(node.id, { videoUri: uri }); setShowImageGrid(false); }}
+                            >
+                                {uri && <SecureVideo src={uri} className="w-full h-full object-cover bg-white" muted loop autoPlay />}
+                                {uri === node.data.videoUri && (
+                                    <div className="absolute top-2 left-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow">
+                                        <CheckCircle size={12} className="text-white" />
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </>
     );
 };
 
