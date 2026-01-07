@@ -2,7 +2,7 @@
 
 // ... existing imports
 import { AppNode, NodeStatus, NodeType, AudioGenerationMode } from '@/types';
-import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2, Grid3X3 } from 'lucide-react';
+import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2, Grid3X3, Check } from 'lucide-react';
 import { VideoModeSelector, SceneDirectorOverlay } from './VideoNodeModules';
 import { AudioNodePanel } from './AudioNodePanel';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
@@ -26,6 +26,7 @@ interface NodeProps {
     onNodeMouseDown: (e: React.MouseEvent, id: string) => void;
     onPortMouseDown: (e: React.MouseEvent, id: string, type: 'input' | 'output') => void;
     onPortMouseUp: (e: React.MouseEvent, id: string, type: 'input' | 'output') => void;
+    onOutputPortAction?: (nodeId: string, position: { x: number, y: number }) => void; // 双击/拖拽释放右连接点时触发
     onNodeContextMenu: (e: React.MouseEvent, id: string) => void;
     onMediaContextMenu?: (e: React.MouseEvent, nodeId: string, type: 'image' | 'video', src: string) => void;
     onResizeMouseDown: (e: React.MouseEvent, id: string, initialWidth: number, initialHeight: number) => void;
@@ -109,6 +110,27 @@ const AUDIO_NODE_HEIGHT = 200;
 
 // --- SECURE VIDEO COMPONENT ---
 // Fetches video as blob to bypass auth/cors issues with <video src>
+// Volcengine URLs are routed through proxy API to avoid CORS
+
+// Helper: Check if URL is from Volcengine and needs proxy
+const isVolcengineUrl = (url: string): boolean => {
+    if (!url || !url.startsWith('http')) return false;
+    try {
+        const urlObj = new URL(url);
+        return urlObj.hostname.includes('tos-cn-beijing.volces.com');
+    } catch {
+        return false;
+    }
+};
+
+// Helper: Get proxied URL for Volcengine
+const getProxiedUrl = (url: string): string => {
+    if (isVolcengineUrl(url)) {
+        return `/api/studio/proxy?url=${encodeURIComponent(url)}`;
+    }
+    return url;
+};
+
 const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMouseLeave, onClick, controls, videoRef, style }: any) => {
     const [blobUrl, setBlobUrl] = useState<string | null>(null);
     const [error, setError] = useState(false);
@@ -121,8 +143,11 @@ const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMo
         }
 
         let active = true;
+        // Use proxy for Volcengine URLs to bypass CORS
+        const fetchUrl = getProxiedUrl(src);
+
         // Fetch the video content
-        fetch(src)
+        fetch(fetchUrl)
             .then(response => {
                 if (!response.ok) throw new Error("Video fetch failed");
                 return response.blob();
@@ -342,7 +367,7 @@ const AudioVisualizer = ({ isPlaying }: { isPlaying: boolean }) => (
 );
 
 const NodeComponent: React.FC<NodeProps> = ({
-    node, onUpdate, onAction, onDelete, onExpand, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, inputAssets, onInputReorder, isDragging, isGroupDragging, isSelected, isResizing, isConnecting
+    node, onUpdate, onAction, onDelete, onExpand, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, inputAssets, onInputReorder, isDragging, isGroupDragging, isSelected, isResizing, isConnecting
 }) => {
     const isWorking = node.status === NodeStatus.WORKING;
     const mediaRef = useRef<HTMLImageElement | HTMLVideoElement | HTMLAudioElement | null>(null);
@@ -385,8 +410,9 @@ const NodeComponent: React.FC<NodeProps> = ({
         if ((node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY || node.type === NodeType.VIDEO_ANALYZER) && node.data.videoUri) {
             if (node.data.videoUri.startsWith('data:')) { setVideoBlobUrl(node.data.videoUri); return; }
             let isActive = true; setIsLoadingVideo(true);
-            // Standard fetch for local usage in analysis/display
-            fetch(node.data.videoUri).then(res => res.blob()).then(blob => {
+            // Use proxy for Volcengine URLs to bypass CORS
+            const fetchUrl = getProxiedUrl(node.data.videoUri);
+            fetch(fetchUrl).then(res => res.blob()).then(blob => {
                 if (isActive) {
                     // Force video/mp4 for local analysis blob too
                     const mp4Blob = new Blob([blob], { type: 'video/mp4' });
@@ -458,7 +484,9 @@ const NodeComponent: React.FC<NodeProps> = ({
             let blobUrl = src;
             // 如果是远程 URL（非 base64/blob），需要 fetch 转 blob
             if (src.startsWith('http')) {
-                const response = await fetch(src);
+                // Use proxy for Volcengine URLs to bypass CORS
+                const fetchUrl = getProxiedUrl(src);
+                const response = await fetch(fetchUrl);
                 const blob = await response.blob();
                 blobUrl = URL.createObjectURL(blob);
             }
@@ -826,6 +854,9 @@ const NodeComponent: React.FC<NodeProps> = ({
         );
     };
 
+    // 复制状态 - 必须在组件顶层声明
+    const [promptCopied, setPromptCopied] = useState(false);
+
     const renderBottomPanel = () => {
         // 创意描述节点不需要底部弹出框（已在节点内集成 AI 优化功能）
         if (node.type === NodeType.PROMPT_INPUT) return null;
@@ -849,6 +880,76 @@ const NodeComponent: React.FC<NodeProps> = ({
                     onInputResizeStart={handleInputResizeStart}
                     onCmdEnter={handleCmdEnter}
                 />
+            );
+        }
+
+        // 结果节点：有生成结果的节点 → 显示提示词+模型信息+配置
+        // 继续编辑功能已迁移到右连接点
+        const hasMediaResult = !!(node.data.image || node.data.videoUri);
+
+        if (hasMediaResult) {
+            const promptText = node.data.prompt || '';
+            const handleCopyPrompt = () => {
+                navigator.clipboard.writeText(promptText);
+                setPromptCopied(true);
+                setTimeout(() => setPromptCopied(false), 1500);
+            };
+
+            // 模型名称映射
+            const MODEL_LABELS: Record<string, string> = {
+                'doubao-seedream-4-5-251128': 'Seedream 4.5',
+                'nano-banana': 'Nano Banana',
+                'nano-banana-pro': 'Nano Banana Pro',
+                'veo3.1': 'Veo 3.1',
+                'veo3.1-pro': 'Veo 3.1 Pro',
+                'veo3.1-components': 'Veo 3.1 多图参考',
+                'doubao-seedance-1-5-pro-251215': 'Seedance 1.5 Pro',
+            };
+            const modelName = node.data.model ? (MODEL_LABELS[node.data.model] || node.data.model) : '默认模型';
+
+            // 收集配置标签
+            const configTags: string[] = [];
+            if (node.data.aspectRatio) configTags.push(node.data.aspectRatio);
+            if (node.data.resolution) configTags.push(node.data.resolution);
+            if (node.data.imageCount && node.data.imageCount > 1) configTags.push(`${node.data.imageCount}张`);
+
+            return (
+                <div className={`absolute top-full left-1/2 -translate-x-1/2 w-[98%] pt-2 z-50 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}>
+                    <div className={`w-full rounded-[20px] p-1 ${GLASS_PANEL}`} onMouseDown={e => e.stopPropagation()}>
+                        <div className="relative bg-white rounded-[16px]">
+                            {/* 模型与配置信息栏 */}
+                            <div className="flex items-center gap-2 px-3 pt-2 pb-1 border-b border-slate-100">
+                                <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-md">
+                                    {modelName}
+                                </span>
+                                {configTags.map((tag, idx) => (
+                                    <span key={idx} className="text-[10px] font-medium text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">
+                                        {tag}
+                                    </span>
+                                ))}
+                            </div>
+                            {/* 提示词内容 */}
+                            <div className="p-3 pr-10">
+                                <p className="text-xs text-slate-700 font-medium leading-relaxed line-clamp-4 break-words">
+                                    {promptText || <span className="text-slate-400 italic">无提示词</span>}
+                                </p>
+                            </div>
+                            {promptText && (
+                                <button
+                                    onClick={handleCopyPrompt}
+                                    className={`absolute top-10 right-2 p-1.5 rounded-lg transition-all duration-200 ${
+                                        promptCopied
+                                            ? 'bg-green-100 text-green-600'
+                                            : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+                                    }`}
+                                    title={promptCopied ? '已复制' : '复制提示词'}
+                                >
+                                    {promptCopied ? <Check size={12} /> : <Copy size={12} />}
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                </div>
             );
         }
 
@@ -991,7 +1092,38 @@ const NodeComponent: React.FC<NodeProps> = ({
             >
                 {renderTopBar()}
                 <div className={`absolute -left-3 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center transition-all duration-300 hover:scale-125 cursor-crosshair z-50 shadow-md ${isConnecting ? 'ring-2 ring-cyan-400 animate-pulse' : ''}`} onMouseDown={(e) => onPortMouseDown(e, node.id, 'input')} onMouseUp={(e) => onPortMouseUp(e, node.id, 'input')} title="Input"><Plus size={10} strokeWidth={3} className="text-slate-400" /></div>
-                <div className={`absolute -right-3 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center transition-all duration-300 hover:scale-125 cursor-crosshair z-50 shadow-md ${isConnecting ? 'ring-2 ring-purple-400 animate-pulse' : ''}`} onMouseDown={(e) => onPortMouseDown(e, node.id, 'output')} onMouseUp={(e) => onPortMouseUp(e, node.id, 'output')} title="Output"><Plus size={10} strokeWidth={3} className="text-slate-400" /></div>
+                {/* 右连接点 - 有媒体结果时增强交互 */}
+                {(() => {
+                    const hasMedia = !!(node.data.image || node.data.videoUri);
+                    const handleOutputDoubleClick = (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        if (hasMedia && onOutputPortAction) {
+                            onOutputPortAction(node.id, { x: e.clientX, y: e.clientY });
+                        }
+                    };
+                    const handleOutputMouseUp = (e: React.MouseEvent) => {
+                        onPortMouseUp(e, node.id, 'output');
+                        // 如果是拖拽释放且有媒体结果，也触发选框
+                        if (hasMedia && onOutputPortAction && isConnecting) {
+                            onOutputPortAction(node.id, { x: e.clientX, y: e.clientY });
+                        }
+                    };
+                    return (
+                        <div
+                            className={`absolute -right-3 top-1/2 -translate-y-1/2 rounded-full border bg-white flex items-center justify-center transition-all duration-300 cursor-crosshair z-50 shadow-md
+                                ${hasMedia
+                                    ? 'w-5 h-5 border-blue-400 hover:scale-150 hover:bg-blue-500 hover:border-blue-500 group/output'
+                                    : 'w-4 h-4 border-slate-300 hover:scale-125'}
+                                ${isConnecting ? 'ring-2 ring-purple-400 animate-pulse' : ''}`}
+                            onMouseDown={(e) => onPortMouseDown(e, node.id, 'output')}
+                            onMouseUp={handleOutputMouseUp}
+                            onDoubleClick={handleOutputDoubleClick}
+                            title={hasMedia ? "双击创建下游节点" : "Output"}
+                        >
+                            <Plus size={hasMedia ? 12 : 10} strokeWidth={3} className={`transition-colors ${hasMedia ? 'text-blue-400 group-hover/output:text-white' : 'text-slate-400'}`} />
+                        </div>
+                    );
+                })()}
                 <div className="w-full h-full flex flex-col relative rounded-[24px] overflow-hidden bg-white"><div className="flex-1 min-h-0 relative bg-white">{renderMediaContent()}</div></div>
                 {renderBottomPanel()}
                 <div className="absolute -bottom-3 -right-3 w-6 h-6 flex items-center justify-center cursor-nwse-resize text-slate-500 hover:text-slate-900 transition-colors opacity-0 group-hover:opacity-100 z-50" onMouseDown={(e) => onResizeMouseDown(e, node.id, nodeWidth, nodeHeight)}><div className="w-1.5 h-1.5 rounded-full bg-current" /></div>
