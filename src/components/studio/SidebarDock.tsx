@@ -68,7 +68,9 @@ const getNodeIcon = (t: string) => {
     }
 };
 
+// 动画曲线
 const SPRING = "cubic-bezier(0.32, 0.72, 0, 1)";
+const EASE_OUT = "cubic-bezier(0.16, 1, 0.3, 1)";
 
 // 节点类型对应的颜色
 const getNodeColor = (type: string) => {
@@ -259,30 +261,61 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
     const [editingWorkflowId, setEditingWorkflowId] = useState<string | null>(null);
     const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<{ visible: boolean, x: number, y: number, id: string, type: 'workflow' | 'history' | 'canvas' } | null>(null);
+    const [isPanelVisible, setIsPanelVisible] = useState(false); // 控制面板可见性动画
     const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const openTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Hover Handlers
+    // Hover Handlers - 优化动效：使用两阶段动画
     const handleSidebarHover = (id: string) => {
         if (['add', 'history', 'workflow', 'canvas'].includes(id)) {
+            // 清除所有定时器
             if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+            if (openTimeoutRef.current) clearTimeout(openTimeoutRef.current);
+
+            // 立即设置面板类型
             setActivePanel(id as any);
+            // 短暂延迟后显示面板（让 DOM 先更新）
+            openTimeoutRef.current = setTimeout(() => setIsPanelVisible(true), 10);
         } else {
-            // Close panel if hovering over non-panel items (undo/chat/smart_sequence)
-            closeTimeoutRef.current = setTimeout(() => setActivePanel(null), 100);
+            // 悬停到非面板按钮时，快速关闭
+            if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+            closeTimeoutRef.current = setTimeout(() => {
+                setIsPanelVisible(false);
+                // 等动画完成后再清除面板内容
+                setTimeout(() => setActivePanel(null), 200);
+            }, 80);
         }
     };
 
     const handleSidebarLeave = () => {
-        closeTimeoutRef.current = setTimeout(() => setActivePanel(null), 500);
+        if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+        closeTimeoutRef.current = setTimeout(() => {
+            setIsPanelVisible(false);
+            setTimeout(() => setActivePanel(null), 200);
+        }, 250); // 缩短延迟，更灵敏
     };
 
     const handlePanelEnter = () => {
         if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+        if (openTimeoutRef.current) clearTimeout(openTimeoutRef.current);
+        setIsPanelVisible(true);
     };
 
     const handlePanelLeave = () => {
-        closeTimeoutRef.current = setTimeout(() => setActivePanel(null), 500);
+        if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+        closeTimeoutRef.current = setTimeout(() => {
+            setIsPanelVisible(false);
+            setTimeout(() => setActivePanel(null), 200);
+        }, 200); // 离开面板后快速关闭
     };
+
+    // Cleanup timers on unmount
+    useEffect(() => {
+        return () => {
+            if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+            if (openTimeoutRef.current) clearTimeout(openTimeoutRef.current);
+        };
+    }, []);
 
     // Close context menu on global click
     useEffect(() => {
@@ -546,29 +579,41 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
                 onMouseLeave={handleSidebarLeave}
             >
                 {[
-                    { id: 'add', icon: Plus },
-                    { id: 'workflow', icon: FolderHeart },
+                    { id: 'add', icon: Plus, tooltip: '添加节点' },
+                    { id: 'workflow', icon: FolderHeart, tooltip: '工作流' },
                     { id: 'smart_sequence', icon: Clapperboard, action: onToggleMultiFrame, active: isMultiFrameOpen, tooltip: '智能多帧' },
-                    { id: 'history', icon: History },
-                    { id: 'chat', icon: MessageSquare, action: onToggleChat, active: isChatOpen },
-                    { id: 'undo', icon: RotateCcw, action: onUndo },
-                ].map(item => (
-                    <div key={item.id} className="relative group">
-                        <button
-                            onMouseEnter={() => handleSidebarHover(item.id)}
-                            onClick={() => item.action ? item.action() : setActivePanel(item.id as any)}
-                            className={`relative group w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 ${activePanel === item.id || item.active ? 'bg-white text-black shadow-lg' : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'}`}
-                        >
-                            <item.icon size={20} strokeWidth={2} />
-                        </button>
-                        {/* Tooltip for Sidebar Icons */}
-                        {item.id === 'smart_sequence' && (
-                            <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2 py-1 bg-white/90 backdrop-blur-md rounded border border-slate-300 text-[10px] text-slate-900 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
-                                {item.tooltip}
-                            </div>
-                        )}
-                    </div>
-                ))}
+                    { id: 'history', icon: History, tooltip: '历史记录' },
+                    { id: 'chat', icon: MessageSquare, action: onToggleChat, active: isChatOpen, tooltip: '对话' },
+                    { id: 'undo', icon: RotateCcw, action: onUndo, tooltip: '撤销' },
+                ].map(item => {
+                    const isActive = activePanel === item.id || item.active;
+                    const hasPanel = ['add', 'history', 'workflow', 'canvas'].includes(item.id);
+                    return (
+                        <div key={item.id} className="relative group">
+                            <button
+                                onMouseEnter={() => handleSidebarHover(item.id)}
+                                onClick={() => item.action ? item.action() : setActivePanel(item.id as any)}
+                                className={`
+                                    relative w-10 h-10 rounded-xl flex items-center justify-center
+                                    transition-all duration-150 ease-out
+                                    hover:scale-105 active:scale-95
+                                    ${isActive
+                                        ? 'bg-white text-slate-900 shadow-lg'
+                                        : 'text-slate-500 hover:text-slate-800 hover:bg-white/60'
+                                    }
+                                `}
+                            >
+                                <item.icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+                            </button>
+                            {/* Tooltip - 仅在非面板按钮悬停时显示，或面板关闭时显示 */}
+                            {(!hasPanel || !isPanelVisible) && (
+                                <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2 py-1 bg-white/95 backdrop-blur-md rounded-md border border-slate-200 text-[10px] font-medium text-slate-700 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none z-50 shadow-sm">
+                                    {item.tooltip}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
                 
                 {/* Spacer & Canvas Manager */}
                 <div className="w-8 h-px bg-slate-100 my-1"></div>
@@ -577,20 +622,44 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
                     <button
                         onMouseEnter={() => handleSidebarHover('canvas')}
                         onClick={() => setActivePanel('canvas')}
-                        className={`relative group w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 ${activePanel === 'canvas' ? 'bg-white text-black shadow-lg' : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'}`}
+                        className={`
+                            relative w-10 h-10 rounded-xl flex items-center justify-center
+                            transition-all duration-150 ease-out
+                            hover:scale-105 active:scale-95
+                            ${activePanel === 'canvas'
+                                ? 'bg-white text-slate-900 shadow-lg'
+                                : 'text-slate-500 hover:text-slate-800 hover:bg-white/60'
+                            }
+                        `}
                     >
-                        <Layers size={20} strokeWidth={2} />
+                        <Layers size={20} strokeWidth={activePanel === 'canvas' ? 2.5 : 2} />
                     </button>
-                    <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2 py-1 bg-white/90 backdrop-blur-md rounded border border-slate-300 text-[10px] text-slate-900 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
-                        画布管理
-                    </div>
+                    {/* Tooltip - 仅在面板关闭时显示 */}
+                    {!isPanelVisible && (
+                        <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 px-2 py-1 bg-white/95 backdrop-blur-md rounded-md border border-slate-200 text-[10px] font-medium text-slate-700 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none z-50 shadow-sm">
+                            画布管理
+                        </div>
+                    )}
                 </div>
 
             </div>
 
             {/* Slide-out Panels */}
-            <div 
-                className={`fixed left-24 top-1/2 -translate-y-1/2 max-h-[75vh] h-auto w-72 bg-white/85 backdrop-blur-3xl border border-slate-300 rounded-2xl shadow-2xl transition-all duration-500 ease-[${SPRING}] z-40 flex flex-col overflow-hidden ${activePanel ? 'translate-x-0 opacity-100' : '-translate-x-10 opacity-0 pointer-events-none scale-95'}`}
+            <div
+                className={`
+                    fixed left-24 top-1/2 -translate-y-1/2 max-h-[75vh] h-auto w-72
+                    bg-white/90 backdrop-blur-2xl border border-slate-200/80 rounded-2xl shadow-2xl
+                    z-40 flex flex-col overflow-hidden
+                    transition-all duration-200 ease-[${EASE_OUT}]
+                    ${isPanelVisible && activePanel
+                        ? 'translate-x-0 opacity-100 scale-100'
+                        : '-translate-x-3 opacity-0 pointer-events-none scale-[0.98]'
+                    }
+                `}
+                style={{
+                    transitionProperty: 'transform, opacity',
+                    willChange: 'transform, opacity',
+                }}
                 onMouseEnter={handlePanelEnter}
                 onMouseLeave={handlePanelLeave}
                 onMouseDown={(e) => e.stopPropagation()}
