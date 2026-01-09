@@ -90,6 +90,9 @@ export interface AppNode {
     
     // Input Management
     sortedInputIds?: string[]; // Order of input nodes for multi-image composition
+
+    // Reference Images (用户上传的参考图，区别于生成结果)
+    referenceImages?: string[]; // Base64 strings of uploaded reference images
   };
   inputs: string[]; // IDs of nodes this node connects FROM
 }
@@ -135,6 +138,9 @@ export interface Canvas {
   groups: Group[];
   createdAt: number;
   updatedAt: number;
+  // 视口状态
+  pan?: { x: number; y: number };
+  scale?: number;
 }
 
 // New Smart Sequence Types

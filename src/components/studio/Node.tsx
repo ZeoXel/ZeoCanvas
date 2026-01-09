@@ -3,7 +3,7 @@
 // ... existing imports
 import { AppNode, NodeStatus, NodeType, AudioGenerationMode } from '@/types';
 import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2, Grid3X3, Check } from 'lucide-react';
-import { VideoModeSelector, SceneDirectorOverlay } from './VideoNodeModules';
+import { SceneDirectorOverlay } from './VideoNodeModules';
 import { AudioNodePanel } from './AudioNodePanel';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
 
@@ -30,6 +30,8 @@ interface NodeProps {
     onNodeContextMenu: (e: React.MouseEvent, id: string) => void;
     onMediaContextMenu?: (e: React.MouseEvent, nodeId: string, type: 'image' | 'video', src: string) => void;
     onResizeMouseDown: (e: React.MouseEvent, id: string, initialWidth: number, initialHeight: number) => void;
+    onDragResultToCanvas?: (sourceNodeId: string, type: 'image' | 'video', src: string, canvasX: number, canvasY: number) => void; // 从组图宫格拖拽结果到画布
+    onGridDragStateChange?: (state: { isDragging: boolean; type?: 'image' | 'video'; src?: string; screenX?: number; screenY?: number } | null) => void; // 通知父组件拖拽状态变化
     inputAssets?: InputAsset[];
     onInputReorder?: (nodeId: string, newOrder: string[]) => void;
 
@@ -100,7 +102,7 @@ const getImageModelConfig = (model: string) => {
         supportsResolution: false,
         supportsMultiImage: false,
         aspectRatios: IMAGE_ASPECT_RATIOS,
-        defaultAspectRatio: '16:9',
+        defaultAspectRatio: '1:1',
     };
 };
 const GLASS_PANEL = "bg-[#ffffff]/95 backdrop-blur-2xl border border-slate-300 shadow-2xl";
@@ -367,7 +369,7 @@ const AudioVisualizer = ({ isPlaying }: { isPlaying: boolean }) => (
 );
 
 const NodeComponent: React.FC<NodeProps> = ({
-    node, onUpdate, onAction, onDelete, onExpand, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, inputAssets, onInputReorder, isDragging, isGroupDragging, isSelected, isResizing, isConnecting
+    node, onUpdate, onAction, onDelete, onExpand, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, onDragResultToCanvas, onGridDragStateChange, inputAssets, onInputReorder, isDragging, isGroupDragging, isSelected, isResizing, isConnecting
 }) => {
     const isWorking = node.status === NodeStatus.WORKING;
     const mediaRef = useRef<HTMLImageElement | HTMLVideoElement | HTMLAudioElement | null>(null);
@@ -381,6 +383,7 @@ const NodeComponent: React.FC<NodeProps> = ({
     const [isHovered, setIsHovered] = useState(false);
     const [isInputFocused, setIsInputFocused] = useState(false);
     const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+    const [isEditingResult, setIsEditingResult] = useState(false); // 编辑已有结果的模式
     const generationMode = node.data.generationMode || 'CONTINUE';
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [localPrompt, setLocalPrompt] = useState(node.data.prompt || '');
@@ -389,10 +392,47 @@ const NodeComponent: React.FC<NodeProps> = ({
     const inputStartDragY = useRef(0);
     const inputStartHeight = useRef(0);
 
+    // 组图宫格拖拽状态 - 使用 ref 实现流畅的实时更新
+    const [gridDragState, setGridDragState] = useState<{
+        isDragging: boolean;
+        src: string;
+        type: 'image' | 'video';
+        startX: number;
+        startY: number;
+        currentX: number;
+        currentY: number;
+    } | null>(null);
+    const gridDragPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+    const ghostElementRef = useRef<HTMLDivElement>(null);
+
     useEffect(() => { setLocalPrompt(node.data.prompt || ''); }, [node.data.prompt]);
     const commitPrompt = () => { if (localPrompt !== (node.data.prompt || '')) onUpdate(node.id, { prompt: localPrompt }); };
-    const handleActionClick = () => { commitPrompt(); onAction(node.id, localPrompt); };
-    const handleCmdEnter = (e: React.KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); commitPrompt(); onAction(node.id, localPrompt); } };
+    const handleActionClick = () => {
+        commitPrompt();
+        // 如果在编辑已有结果的模式下，先清除旧结果再生成
+        if (isEditingResult) {
+            onUpdate(node.id, {
+                image: undefined,
+                images: undefined,
+                videoUri: undefined,
+                videoUris: undefined,
+                videoMetadata: undefined,
+                error: undefined,
+            });
+            setIsEditingResult(false);
+            setTimeout(() => {
+                onAction(node.id, localPrompt);
+            }, 50);
+        } else {
+            onAction(node.id, localPrompt);
+        }
+    };
+    const handleCmdEnter = (e: React.KeyboardEvent) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            e.preventDefault();
+            handleActionClick();
+        }
+    };
 
     const handleInputResizeStart = (e: React.MouseEvent) => {
         e.stopPropagation(); e.preventDefault();
@@ -534,6 +574,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                     const [rw, rh] = aspectRatio.split(':').map(Number);
                     const newHeight = (nodeWidth * rh) / rw;
                     onUpdate(node.id, { videoUri: dataUrl, aspectRatio }, { height: newHeight });
+                    // 上传视频后进入编辑模式，允许用户继续编辑提示词
+                    setIsEditingResult(true);
                 };
                 video.src = dataUrl;
             };
@@ -567,6 +609,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                     const [rw, rh] = aspectRatio.split(':').map(Number);
                     const newHeight = (nodeWidth * rh) / rw;
                     onUpdate(node.id, { image: dataUrl, aspectRatio }, { height: newHeight });
+                    // 上传图片后进入编辑模式，允许用户继续编辑提示词
+                    setIsEditingResult(true);
                 };
                 img.src = dataUrl;
             };
@@ -603,7 +647,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         if (node.height) return node.height;
         if (node.type === NodeType.VIDEO_ANALYZER || node.type === NodeType.IMAGE_EDITOR || node.type === NodeType.PROMPT_INPUT) return DEFAULT_FIXED_HEIGHT;
         if (node.type === NodeType.AUDIO_GENERATOR) return AUDIO_NODE_HEIGHT;
-        const ratio = node.data.aspectRatio || '16:9';
+        const ratio = node.data.aspectRatio || '1:1';
         const [w, h] = ratio.split(':').map(Number);
         const extra = (node.type === NodeType.VIDEO_FACTORY && generationMode === 'CUT') ? 36 : 0;
         return ((node.width || DEFAULT_NODE_WIDTH) * h / w) + extra;
@@ -617,7 +661,6 @@ const NodeComponent: React.FC<NodeProps> = ({
         return (
             <div className={`absolute -top-10 left-0 w-full flex items-center justify-between px-1 transition-all duration-300 ${showTopBar ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'}`}>
                 <div className="flex items-center gap-1.5 pointer-events-auto">
-                    {node.type === NodeType.VIDEO_FACTORY && (<VideoModeSelector currentMode={generationMode} onSelect={(mode) => onUpdate(node.id, { generationMode: mode })} />)}
                     {(node.data.image || node.data.videoUri || node.data.audioUri) && (
                         <div className="flex items-center gap-1">
                             <button onClick={handleDownload} className="p-1.5 bg-white/70 border border-slate-300 backdrop-blur-md rounded-md text-slate-600 hover:text-slate-900 hover:border-white/30 transition-colors" title="下载"><Download size={14} /></button>
@@ -797,7 +840,26 @@ const NodeComponent: React.FC<NodeProps> = ({
         return (
             <div className="w-full h-full relative group/media overflow-hidden bg-white" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
                 {!hasContent ? (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-600"><div className="w-20 h-20 rounded-[28px] bg-slate-50 border border-slate-200 flex items-center justify-center cursor-pointer hover:bg-slate-100 hover:scale-105 transition-all duration-300 shadow-inner" onClick={() => fileInputRef.current?.click()}>{isWorking ? <Loader2 className="animate-spin text-blue-500" size={32} /> : (node.type === NodeType.VIDEO_GENERATOR ? <ImageIcon size={32} className="opacity-50" /> : <NodeIcon size={32} className="opacity-50" />)}</div><span className="text-[11px] font-bold uppercase tracking-[0.2em] opacity-40">{isWorking ? "处理中..." : "拖拽或上传"}</span><input type="file" ref={fileInputRef} className="hidden" accept={node.type === NodeType.VIDEO_FACTORY ? "video/*" : "image/*"} onChange={node.type === NodeType.VIDEO_FACTORY ? handleUploadVideo : handleUploadImage} /></div>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-600">
+                        {node.type === NodeType.VIDEO_FACTORY && generationMode === 'CUT' ? (
+                            // 局部分镜模式：提示在上游截取分镜帧
+                            <>
+                                <div className="w-20 h-20 rounded-[28px] bg-orange-50 border border-orange-200 flex items-center justify-center">
+                                    {isWorking ? <Loader2 className="animate-spin text-orange-500" size={32} /> : <Scissors size={32} className="text-orange-400" />}
+                                </div>
+                                <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-orange-500">{isWorking ? "处理中..." : "在上游视频截取分镜帧"}</span>
+                            </>
+                        ) : (
+                            // 默认：上传或拖拽
+                            <>
+                                <div className="w-20 h-20 rounded-[28px] bg-slate-50 border border-slate-200 flex items-center justify-center cursor-pointer hover:bg-slate-100 hover:scale-105 transition-all duration-300 shadow-inner" onClick={() => fileInputRef.current?.click()}>
+                                    {isWorking ? <Loader2 className="animate-spin text-blue-500" size={32} /> : (node.type === NodeType.VIDEO_GENERATOR ? <ImageIcon size={32} className="opacity-50" /> : <NodeIcon size={32} className="opacity-50" />)}
+                                </div>
+                                <span className="text-[11px] font-bold uppercase tracking-[0.2em] opacity-40">{isWorking ? "处理中..." : "拖拽或上传"}</span>
+                                <input type="file" ref={fileInputRef} className="hidden" accept={node.type === NodeType.VIDEO_FACTORY ? "video/*" : "image/*"} onChange={node.type === NodeType.VIDEO_FACTORY ? handleUploadVideo : handleUploadImage} />
+                            </>
+                        )}
+                    </div>
                 ) : (
                     <>
                         {node.data.image ?
@@ -887,12 +949,18 @@ const NodeComponent: React.FC<NodeProps> = ({
         // 继续编辑功能已迁移到右连接点
         const hasMediaResult = !!(node.data.image || node.data.videoUri);
 
-        if (hasMediaResult) {
+        if (hasMediaResult && !isEditingResult) {
+            // 结果展示模式
             const promptText = node.data.prompt || '';
             const handleCopyPrompt = () => {
                 navigator.clipboard.writeText(promptText);
                 setPromptCopied(true);
                 setTimeout(() => setPromptCopied(false), 1500);
+            };
+
+            // 进入编辑模式（不清除结果）
+            const handleEnterEditMode = () => {
+                setIsEditingResult(true);
             };
 
             // 模型名称映射
@@ -911,7 +979,6 @@ const NodeComponent: React.FC<NodeProps> = ({
             const configTags: string[] = [];
             if (node.data.aspectRatio) configTags.push(node.data.aspectRatio);
             if (node.data.resolution) configTags.push(node.data.resolution);
-            if (node.data.imageCount && node.data.imageCount > 1) configTags.push(`${node.data.imageCount}张`);
 
             return (
                 <div className={`absolute top-full left-1/2 -translate-x-1/2 w-[98%] pt-2 z-50 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}>
@@ -929,24 +996,36 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 ))}
                             </div>
                             {/* 提示词内容 */}
-                            <div className="p-3 pr-10">
+                            <div className="p-3">
                                 <p className="text-xs text-slate-700 font-medium leading-relaxed line-clamp-4 break-words">
                                     {promptText || <span className="text-slate-400 italic">无提示词</span>}
                                 </p>
                             </div>
-                            {promptText && (
+                            {/* 底部操作栏 */}
+                            <div className="flex items-center justify-end gap-1 px-2 pb-2 pt-1 border-t border-slate-100">
+                                {promptText && (
+                                    <button
+                                        onClick={handleCopyPrompt}
+                                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium transition-all duration-200 ${
+                                            promptCopied
+                                                ? 'bg-green-100 text-green-600'
+                                                : 'hover:bg-slate-100 text-slate-500 hover:text-slate-700'
+                                        }`}
+                                        title={promptCopied ? '已复制' : '复制提示词'}
+                                    >
+                                        {promptCopied ? <Check size={12} /> : <Copy size={12} />}
+                                        <span>{promptCopied ? '已复制' : '复制'}</span>
+                                    </button>
+                                )}
                                 <button
-                                    onClick={handleCopyPrompt}
-                                    className={`absolute top-10 right-2 p-1.5 rounded-lg transition-all duration-200 ${
-                                        promptCopied
-                                            ? 'bg-green-100 text-green-600'
-                                            : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
-                                    }`}
-                                    title={promptCopied ? '已复制' : '复制提示词'}
+                                    onClick={handleEnterEditMode}
+                                    className="flex items-center gap-1 px-3 py-1 rounded-lg text-[10px] font-bold bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-md hover:scale-105 active:scale-95 transition-all duration-200"
+                                    title="重新生成：进入编辑模式，可修改配置后重新生成"
                                 >
-                                    {promptCopied ? <Check size={12} /> : <Copy size={12} />}
+                                    <RefreshCw size={12} />
+                                    <span>重新生成</span>
                                 </button>
-                            )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -995,15 +1074,29 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400"><span>{currentModelLabel}</span><ChevronDown size={10} /></div>
                                 <div className="absolute bottom-full left-0 pb-2 w-40 opacity-0 translate-y-2 pointer-events-none group-hover/model:opacity-100 group-hover/model:translate-y-0 group-hover/model:pointer-events-auto transition-all duration-200 z-[200]"><div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">{models.map(m => (<div key={m.v} onClick={() => onUpdate(node.id, { model: m.v })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.model === m.v ? 'text-blue-400 bg-slate-50' : 'text-slate-600'}`}>{m.l}</div>))}</div></div>
                             </div>
-                            {/* 比例选择 - 根据模型配置显示 */}
+                            {/* 比例选择 - 有素材时只读，无素材时可选择 */}
                             {(() => {
                                 const isImageNode = node.type.includes('IMAGE');
                                 const modelConfig = isImageNode ? getImageModelConfig(node.data.model || '') : null;
                                 const showAspectRatio = node.type !== NodeType.VIDEO_ANALYZER && (!isImageNode || modelConfig?.supportsAspectRatio);
                                 const aspectRatios = isImageNode && modelConfig?.aspectRatios ? modelConfig.aspectRatios : (node.type.includes('VIDEO') ? VIDEO_ASPECT_RATIOS : IMAGE_ASPECT_RATIOS);
                                 const defaultRatio = modelConfig?.defaultAspectRatio || '16:9';
+                                // 有素材时比例只读
+                                const hasMedia = !!(node.data.image || node.data.videoUri);
 
-                                return showAspectRatio && (
+                                if (!showAspectRatio) return null;
+
+                                // 有素材时显示只读比例
+                                if (hasMedia) {
+                                    return (
+                                        <div className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold text-slate-400">
+                                            <Scaling size={12} /><span>{node.data.aspectRatio || defaultRatio}</span>
+                                        </div>
+                                    );
+                                }
+
+                                // 无素材时可选择比例
+                                return (
                                     <div className="relative group/ratio">
                                         <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 hover:text-blue-400">
                                             <Scaling size={12} /><span>{node.data.aspectRatio || defaultRatio}</span>
@@ -1057,7 +1150,19 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 </div>
                             )}
                         </div>
-                        <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-black hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}<span>{isWorking ? '生成中...' : '生成'}</span></button>
+                        <div className="flex items-center gap-2">
+                            {/* 编辑模式下显示取消按钮 */}
+                            {isEditingResult && (
+                                <button
+                                    onClick={() => setIsEditingResult(false)}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-[12px] font-bold text-[10px] text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-all duration-200"
+                                >
+                                    <X size={12} />
+                                    <span>取消</span>
+                                </button>
+                            )}
+                            <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-black hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}<span>{isWorking ? '生成中...' : '生成'}</span></button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1128,7 +1233,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                 {renderBottomPanel()}
                 <div className="absolute -bottom-3 -right-3 w-6 h-6 flex items-center justify-center cursor-nwse-resize text-slate-500 hover:text-slate-900 transition-colors opacity-0 group-hover:opacity-100 z-50" onMouseDown={(e) => onResizeMouseDown(e, node.id, nodeWidth, nodeHeight)}><div className="w-1.5 h-1.5 rounded-full bg-current" /></div>
             </div>
-            {/* 组图宫格 - 始终渲染，CSS控制显隐 */}
+            {/* 组图宫格 - 始终渲染，CSS控制显隐，支持拖拽到画布 */}
             {hasGrid && (
                 <div
                     className="absolute bg-white rounded-[24px] shadow-2xl transition-all duration-200"
@@ -1149,36 +1254,221 @@ const NodeComponent: React.FC<NodeProps> = ({
                     >
                         <X size={14} className="text-white" />
                     </button>
+                    {/* 拖拽提示 */}
+                    <div className="absolute top-3 left-3 z-10 px-2 py-1 bg-black/50 rounded-lg text-[10px] text-white/80 font-medium">
+                        点击选择 · 拖拽创建副本
+                    </div>
                     <div className="w-full h-full grid grid-cols-2" style={{ gap }}>
-                        {node.data.images ? node.data.images.map((img, idx) => (
-                            <div
-                                key={idx}
-                                className={`relative overflow-hidden cursor-pointer rounded-[20px] ${img === node.data.image ? 'ring-4 ring-blue-500 ring-inset' : 'hover:brightness-95'} transition-all`}
-                                style={{ width: nodeWidth, height: nodeHeight }}
-                                onClick={() => { onUpdate(node.id, { image: img }); setShowImageGrid(false); }}
-                            >
-                                <img src={img} className="w-full h-full object-cover" />
-                                {img === node.data.image && (
-                                    <div className="absolute top-2 left-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow">
-                                        <CheckCircle size={12} className="text-white" />
+                        {node.data.images ? node.data.images.map((img, idx) => {
+                            const isSelected = img === node.data.image;
+                            const handleGridItemMouseDown = (e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                const startX = e.clientX;
+                                const startY = e.clientY;
+                                let hasMoved = false;
+                                let rafId: number | null = null;
+
+                                const handleMouseMove = (moveEvent: MouseEvent) => {
+                                    const dx = Math.abs(moveEvent.clientX - startX);
+                                    const dy = Math.abs(moveEvent.clientY - startY);
+
+                                    // 使用 RAF 更新 ghost 位置，确保流畅
+                                    gridDragPosRef.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+                                    if (ghostElementRef.current) {
+                                        ghostElementRef.current.style.left = `${moveEvent.clientX - 100}px`;
+                                        ghostElementRef.current.style.top = `${moveEvent.clientY - 60}px`;
+                                    }
+
+                                    if (dx > 5 || dy > 5) {
+                                        if (!hasMoved) {
+                                            hasMoved = true;
+                                            setGridDragState({
+                                                isDragging: true,
+                                                src: img,
+                                                type: 'image',
+                                                startX,
+                                                startY,
+                                                currentX: moveEvent.clientX,
+                                                currentY: moveEvent.clientY,
+                                            });
+                                        }
+                                        // 通知父组件拖拽位置变化（用于显示放置预览）
+                                        onGridDragStateChange?.({
+                                            isDragging: true,
+                                            type: 'image',
+                                            src: img,
+                                            screenX: moveEvent.clientX,
+                                            screenY: moveEvent.clientY,
+                                        });
+                                    }
+                                };
+
+                                const handleMouseUp = (upEvent: MouseEvent) => {
+                                    window.removeEventListener('mousemove', handleMouseMove);
+                                    window.removeEventListener('mouseup', handleMouseUp);
+                                    document.body.style.cursor = '';
+                                    if (rafId) cancelAnimationFrame(rafId);
+
+                                    // 通知父组件拖拽结束
+                                    onGridDragStateChange?.(null);
+
+                                    if (hasMoved && onDragResultToCanvas) {
+                                        // 拖拽到画布创建新节点
+                                        onDragResultToCanvas(node.id, 'image', img, upEvent.clientX, upEvent.clientY);
+                                        setShowImageGrid(false);
+                                    } else if (!hasMoved) {
+                                        // 点击选择
+                                        onUpdate(node.id, { image: img });
+                                        setShowImageGrid(false);
+                                    }
+                                    setGridDragState(null);
+                                };
+
+                                document.body.style.cursor = 'grabbing';
+                                window.addEventListener('mousemove', handleMouseMove);
+                                window.addEventListener('mouseup', handleMouseUp);
+                            };
+
+                            return (
+                                <div
+                                    key={idx}
+                                    className={`relative overflow-hidden cursor-grab active:cursor-grabbing rounded-[20px] ${isSelected ? 'ring-4 ring-blue-500 ring-inset' : 'hover:brightness-95 hover:ring-2 hover:ring-cyan-400'} transition-all group/item`}
+                                    style={{ width: nodeWidth, height: nodeHeight }}
+                                    onMouseDown={handleGridItemMouseDown}
+                                >
+                                    <img src={img} className="w-full h-full object-cover pointer-events-none" draggable={false} />
+                                    {isSelected && (
+                                        <div className="absolute top-2 left-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow">
+                                            <CheckCircle size={12} className="text-white" />
+                                        </div>
+                                    )}
+                                    {/* 拖拽指示器 */}
+                                    <div className="absolute bottom-2 right-2 opacity-0 group-hover/item:opacity-100 transition-opacity bg-black/50 px-2 py-1 rounded-lg flex items-center gap-1">
+                                        <GripHorizontal size={12} className="text-white" />
+                                        <span className="text-[9px] text-white font-medium">拖拽</span>
                                     </div>
-                                )}
-                            </div>
-                        )) : node.data.videoUris?.map((uri, idx) => (
-                            <div
-                                key={idx}
-                                className={`relative overflow-hidden cursor-pointer rounded-[20px] ${uri === node.data.videoUri ? 'ring-4 ring-blue-500 ring-inset' : 'hover:brightness-95'} transition-all`}
-                                style={{ width: nodeWidth, height: nodeHeight }}
-                                onClick={() => { onUpdate(node.id, { videoUri: uri }); setShowImageGrid(false); }}
-                            >
-                                {uri && <SecureVideo src={uri} className="w-full h-full object-cover bg-white" muted loop autoPlay />}
-                                {uri === node.data.videoUri && (
-                                    <div className="absolute top-2 left-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow">
-                                        <CheckCircle size={12} className="text-white" />
+                                </div>
+                            );
+                        }) : node.data.videoUris?.map((uri, idx) => {
+                            const isSelected = uri === node.data.videoUri;
+                            const handleGridItemMouseDown = (e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                const startX = e.clientX;
+                                const startY = e.clientY;
+                                let hasMoved = false;
+                                let rafId: number | null = null;
+
+                                const handleMouseMove = (moveEvent: MouseEvent) => {
+                                    const dx = Math.abs(moveEvent.clientX - startX);
+                                    const dy = Math.abs(moveEvent.clientY - startY);
+
+                                    // 使用 RAF 更新 ghost 位置，确保流畅
+                                    gridDragPosRef.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+                                    if (ghostElementRef.current) {
+                                        ghostElementRef.current.style.left = `${moveEvent.clientX - 100}px`;
+                                        ghostElementRef.current.style.top = `${moveEvent.clientY - 60}px`;
+                                    }
+
+                                    if (dx > 5 || dy > 5) {
+                                        if (!hasMoved) {
+                                            hasMoved = true;
+                                            setGridDragState({
+                                                isDragging: true,
+                                                src: uri,
+                                                type: 'video',
+                                                startX,
+                                                startY,
+                                                currentX: moveEvent.clientX,
+                                                currentY: moveEvent.clientY,
+                                            });
+                                        }
+                                        // 通知父组件拖拽位置变化（用于显示放置预览）
+                                        onGridDragStateChange?.({
+                                            isDragging: true,
+                                            type: 'video',
+                                            src: uri,
+                                            screenX: moveEvent.clientX,
+                                            screenY: moveEvent.clientY,
+                                        });
+                                    }
+                                };
+
+                                const handleMouseUp = (upEvent: MouseEvent) => {
+                                    window.removeEventListener('mousemove', handleMouseMove);
+                                    window.removeEventListener('mouseup', handleMouseUp);
+                                    document.body.style.cursor = '';
+                                    if (rafId) cancelAnimationFrame(rafId);
+
+                                    // 通知父组件拖拽结束
+                                    onGridDragStateChange?.(null);
+
+                                    if (hasMoved && onDragResultToCanvas) {
+                                        // 拖拽到画布创建新节点
+                                        onDragResultToCanvas(node.id, 'video', uri, upEvent.clientX, upEvent.clientY);
+                                        setShowImageGrid(false);
+                                    } else if (!hasMoved) {
+                                        // 点击选择
+                                        onUpdate(node.id, { videoUri: uri });
+                                        setShowImageGrid(false);
+                                    }
+                                    setGridDragState(null);
+                                };
+
+                                document.body.style.cursor = 'grabbing';
+                                window.addEventListener('mousemove', handleMouseMove);
+                                window.addEventListener('mouseup', handleMouseUp);
+                            };
+
+                            return (
+                                <div
+                                    key={idx}
+                                    className={`relative overflow-hidden cursor-grab active:cursor-grabbing rounded-[20px] ${isSelected ? 'ring-4 ring-blue-500 ring-inset' : 'hover:brightness-95 hover:ring-2 hover:ring-cyan-400'} transition-all group/item`}
+                                    style={{ width: nodeWidth, height: nodeHeight }}
+                                    onMouseDown={handleGridItemMouseDown}
+                                >
+                                    {uri && <SecureVideo src={uri} className="w-full h-full object-cover bg-white pointer-events-none" muted loop autoPlay />}
+                                    {isSelected && (
+                                        <div className="absolute top-2 left-2 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center shadow">
+                                            <CheckCircle size={12} className="text-white" />
+                                        </div>
+                                    )}
+                                    {/* 拖拽指示器 */}
+                                    <div className="absolute bottom-2 right-2 opacity-0 group-hover/item:opacity-100 transition-opacity bg-black/50 px-2 py-1 rounded-lg flex items-center gap-1">
+                                        <GripHorizontal size={12} className="text-white" />
+                                        <span className="text-[9px] text-white font-medium">拖拽</span>
                                     </div>
-                                )}
-                            </div>
-                        ))}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+            {/* 拖拽预览层 - 跟随鼠标的ghost元素 */}
+            {gridDragState?.isDragging && (
+                <div
+                    ref={ghostElementRef}
+                    className="fixed pointer-events-none z-[9999] rounded-[20px] shadow-2xl overflow-hidden ring-2 ring-cyan-400 animate-pulse"
+                    style={{
+                        left: gridDragState.currentX - 100,
+                        top: gridDragState.currentY - 60,
+                        width: 200,
+                        height: 120,
+                        transform: 'scale(1.05)',
+                        transition: 'transform 0.15s ease-out',
+                    }}
+                >
+                    {gridDragState.type === 'image' ? (
+                        <img src={gridDragState.src} className="w-full h-full object-cover" draggable={false} />
+                    ) : (
+                        <SecureVideo src={gridDragState.src} className="w-full h-full object-cover bg-white" muted />
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-cyan-500/30 via-transparent to-transparent" />
+                    <div className="absolute inset-0 ring-2 ring-inset ring-white/30 rounded-[20px]" />
+                    <div className="absolute bottom-2 left-2 right-2 flex items-center justify-center gap-1.5 bg-black/60 backdrop-blur-sm rounded-lg py-1.5 px-2">
+                        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-ping" />
+                        <span className="text-[10px] text-white font-bold tracking-wide">松开放置</span>
                     </div>
                 </div>
             )}

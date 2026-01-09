@@ -1,17 +1,18 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     Plus, Play, Pause, X, Clock, Trash2, Link, ArrowRight,
     GripVertical, RefreshCw, Download, Maximize2, Minimize2,
-    MonitorPlay, Loader2
+    MonitorPlay, Loader2, Settings, Zap, Film
 } from 'lucide-react';
 import { SmartSequenceItem } from '@/types';
+import { ViduMultiFrameConfig, VIDU_MODELS, VIDU_RESOLUTIONS } from '@/services/viduService';
 
 interface SmartSequenceDockProps {
     isOpen: boolean;
     onClose: () => void;
-    onGenerate: (frames: SmartSequenceItem[]) => Promise<string>;
+    onGenerate: (frames: SmartSequenceItem[], config: ViduMultiFrameConfig) => Promise<string>;
     onConnectStart?: (e: React.MouseEvent, type: 'input' | 'output') => void;
 }
 
@@ -28,15 +29,23 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
     const [isPlaying, setIsPlaying] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
+    const expandedVideoRef = useRef<HTMLVideoElement>(null);
 
     // Generation State
     const [isGenerating, setIsGenerating] = useState(false);
     const [resultVideoUrl, setResultVideoUrl] = useState<string | null>(null);
 
+    // Vidu Config State
+    const [viduConfig, setViduConfig] = useState<ViduMultiFrameConfig>({
+        model: 'viduq2-turbo',
+        resolution: '720p',
+    });
+    const [showSettings, setShowSettings] = useState(false);
+
     // Transition Editor State
     const [editingTransitionId, setEditingTransitionId] = useState<string | null>(null);
     const [tempPrompt, setTempPrompt] = useState('');
-    const [tempDuration, setTempDuration] = useState(3);
+    const [tempDuration, setTempDuration] = useState(5); // Vidu 默认 5s
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dockRef = useRef<HTMLDivElement>(null);
@@ -66,9 +75,10 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
         setIsGenerating(true);
         setResultVideoUrl(null);
         setIsPlaying(false);
+        setShowSettings(false); // 关闭设置面板
 
         try {
-            const url = await onGenerate(frames);
+            const url = await onGenerate(frames, viduConfig);
             setResultVideoUrl(url);
             // Auto play after generation
             setTimeout(() => {
@@ -84,48 +94,88 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
     };
 
     const togglePlay = () => {
-        if (!videoRef.current || !resultVideoUrl) return;
+        const video = isExpanded ? expandedVideoRef.current : videoRef.current;
+        if (!video || !resultVideoUrl) return;
         if (isPlaying) {
-            videoRef.current.pause();
+            video.pause();
             setIsPlaying(false);
         } else {
-            videoRef.current.play();
+            video.play();
             setIsPlaying(true);
         }
     };
 
-    // --- Drag & Drop (Spring Feel) ---
-    const handleDragStart = (e: React.DragEvent, index: number) => {
+    // 切换展开模式时重置播放状态
+    useEffect(() => {
+        setIsPlaying(false);
+        // 暂停所有视频
+        videoRef.current?.pause();
+        expandedVideoRef.current?.pause();
+    }, [isExpanded]);
+
+    // --- Mouse-based Drag & Drop (更可靠的实现) ---
+    const dragStartPos = useRef<{ x: number; y: number } | null>(null);
+
+    const handleMouseDown = (e: React.MouseEvent, index: number) => {
+        if (e.button !== 0) return; // 只响应左键
+        e.preventDefault();
         e.stopPropagation();
+        dragStartPos.current = { x: e.clientX, y: e.clientY };
         setDraggingIndex(index);
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.dropEffect = 'move';
-        // 使用当前拖拽元素作为拖拽图像，偏移到中心
-        const target = e.currentTarget as HTMLElement;
-        e.dataTransfer.setDragImage(target, target.offsetWidth / 2, target.offsetHeight / 2);
+        console.log('[Drag] MouseDown:', index);
     };
 
-    const handleDragEnd = (e: React.DragEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
+    const handleMouseMove = useCallback((e: MouseEvent) => {
+        if (draggingIndex === null || !dragStartPos.current) return;
+
+        // 检测是否真的在拖动（移动超过5px）
+        const dx = Math.abs(e.clientX - dragStartPos.current.x);
+        const dy = Math.abs(e.clientY - dragStartPos.current.y);
+        if (dx < 5 && dy < 5) return;
+
+        // 找到鼠标下方的帧
+        const elements = document.elementsFromPoint(e.clientX, e.clientY);
+        for (const el of elements) {
+            const frameEl = el.closest('[data-frame-index]') as HTMLElement;
+            if (frameEl) {
+                const targetIndex = parseInt(frameEl.dataset.frameIndex || '-1');
+                if (targetIndex >= 0 && targetIndex !== draggingIndex) {
+                    console.log('[Drag] Move to:', targetIndex);
+                    setDragOverIndex(targetIndex);
+                    // Live Reorder
+                    setFrames(prev => {
+                        const newFrames = [...prev];
+                        const [moved] = newFrames.splice(draggingIndex, 1);
+                        newFrames.splice(targetIndex, 0, moved);
+                        return newFrames;
+                    });
+                    setDraggingIndex(targetIndex);
+                }
+                break;
+            }
+        }
+    }, [draggingIndex]);
+
+    const handleMouseUp = useCallback(() => {
+        if (draggingIndex !== null) {
+            console.log('[Drag] MouseUp');
+        }
         setDraggingIndex(null);
         setDragOverIndex(null);
-    };
+        dragStartPos.current = null;
+    }, [draggingIndex]);
 
-    const handleDragOver = (e: React.DragEvent, index: number) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (draggingIndex === null) return;
-        if (draggingIndex !== index) {
-            setDragOverIndex(index);
-            // Live Reorder (Spring Swap)
-            const newFrames = [...frames];
-            const [moved] = newFrames.splice(draggingIndex, 1);
-            newFrames.splice(index, 0, moved);
-            setFrames(newFrames);
-            setDraggingIndex(index);
+    // 全局鼠标事件监听
+    useEffect(() => {
+        if (draggingIndex !== null) {
+            window.addEventListener('mousemove', handleMouseMove);
+            window.addEventListener('mouseup', handleMouseUp);
+            return () => {
+                window.removeEventListener('mousemove', handleMouseMove);
+                window.removeEventListener('mouseup', handleMouseUp);
+            };
         }
-    };
+    }, [draggingIndex, handleMouseMove, handleMouseUp]);
 
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();
@@ -142,7 +192,7 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                     reader.onload = (ev) => resolve({
                         id: `seq-${Date.now()}-${Math.random()}`,
                         src: ev.target?.result as string,
-                        transition: { duration: 3, prompt: '' }
+                        transition: { duration: 5, prompt: '' } // Vidu 默认 5s
                     });
                     reader.readAsDataURL(file);
                 }));
@@ -162,7 +212,7 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                 reader.onload = (ev) => resolve({
                     id: `seq-${Date.now()}-${Math.random()}`,
                     src: ev.target?.result as string,
-                    transition: { duration: 3, prompt: '' }
+                    transition: { duration: 5, prompt: '' } // Vidu 默认 5s
                 });
                 reader.readAsDataURL(file);
             }));
@@ -194,22 +244,19 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
 
     // --- Render ---
 
+    // 小型播放器 (非展开模式)
     const renderPlayer = () => (
         <div
-            className={`
-                relative bg-white border border-slate-200 shadow-[0_25px_65px_rgba(15,23,42,0.12)] overflow-hidden flex items-center justify-center transition-all duration-500
-                ${isExpanded ? 'fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[50vw] h-[28.125vw] max-w-[90vw] max-h-[80vh] z-[100] rounded-3xl shadow-[0_50px_120px_rgba(15,23,42,0.25)]' : 'w-[360px] h-[202px] rounded-2xl'}
-            `}
-            style={{ transitionTimingFunction: SPRING }}
+            className="relative bg-white border border-slate-200 shadow-[0_25px_65px_rgba(15,23,42,0.12)] overflow-hidden flex items-center justify-center w-[360px] h-[202px] rounded-2xl"
         >
             {/* Top Left Controls (Expand / Download) */}
             <div className={`absolute top-3 left-3 flex gap-2 z-20 transition-opacity duration-200 ${isGenerating ? 'opacity-0' : 'opacity-0 hover:opacity-100 group-hover/player:opacity-100'}`}>
                 <button
-                    onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}
+                    onClick={(e) => { e.stopPropagation(); setIsExpanded(true); }}
                     className="p-2 bg-white/90 backdrop-blur-md rounded-lg text-slate-700 hover:text-slate-900 border border-slate-300 hover:scale-105 transition-all"
-                    title={isExpanded ? "退出全屏" : "放大预览"}
+                    title="放大预览"
                 >
-                    {isExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                    <Maximize2 size={16} />
                 </button>
                 {resultVideoUrl && (
                     <a
@@ -231,18 +278,20 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                     <span className="text-[10px] font-bold text-slate-600 tracking-widest uppercase animate-pulse">正在生成智能补帧...</span>
                 </div>
             ) : resultVideoUrl ? (
-                <div className="relative w-full h-full group/video" onClick={togglePlay}>
+                <div className="relative w-full h-full group/video cursor-pointer" onClick={togglePlay}>
                     <video
                         ref={videoRef}
                         src={resultVideoUrl}
-                        className="w-full h-full object-contain"
+                        className="w-full h-full object-contain bg-black"
                         loop
                         playsInline
                         onEnded={() => setIsPlaying(false)}
                     />
                     {!isPlaying && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur">
-                            <Play size={48} className="text-slate-600 fill-white/20" />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                            <div className="w-14 h-14 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+                                <Play size={24} className="text-slate-700 ml-1" fill="currentColor" />
+                            </div>
                         </div>
                     )}
                 </div>
@@ -283,12 +332,67 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
 
     return (
         <>
-            {/* Expanded Backdrop */}
+            {/* Expanded Mode: Backdrop + Player (独立渲染，不受 dock 容器限制) */}
             {isExpanded && (
-                <div
-                    className="fixed inset-0 z-[90] bg-white/90 backdrop-blur-sm animate-in fade-in duration-300"
-                    onClick={() => setIsExpanded(false)}
-                />
+                <>
+                    {/* 背景遮罩 - 点击关闭 */}
+                    <div
+                        className="fixed inset-0 z-[90] bg-black/50 animate-in fade-in duration-300"
+                        onClick={() => setIsExpanded(false)}
+                    />
+                    {/* 展开的播放器 - 在遮罩之上 */}
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
+                        <div
+                            className="relative bg-white border border-slate-200 rounded-3xl shadow-[0_50px_120px_rgba(15,23,42,0.25)] overflow-hidden w-[80vw] h-[45vw] max-w-[1280px] max-h-[720px] pointer-events-auto"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {/* 控制按钮 */}
+                            <div className="absolute top-4 left-4 flex gap-2 z-20">
+                                <button
+                                    onClick={() => setIsExpanded(false)}
+                                    className="p-2.5 bg-white/90 backdrop-blur-md rounded-lg text-slate-700 hover:text-slate-900 border border-slate-300 hover:scale-105 transition-all"
+                                    title="退出全屏"
+                                >
+                                    <Minimize2 size={18} />
+                                </button>
+                                {resultVideoUrl && (
+                                    <a
+                                        href={resultVideoUrl}
+                                        download={`ls-studio_seq_${Date.now()}.mp4`}
+                                        className="p-2.5 bg-white/90 backdrop-blur-md rounded-lg text-slate-700 hover:text-slate-900 border border-slate-300 hover:scale-105 transition-all"
+                                        title="下载视频"
+                                    >
+                                        <Download size={18} />
+                                    </a>
+                                )}
+                            </div>
+                            {/* 视频内容 */}
+                            {resultVideoUrl ? (
+                                <div className="w-full h-full cursor-pointer" onClick={togglePlay}>
+                                    <video
+                                        ref={expandedVideoRef}
+                                        src={resultVideoUrl}
+                                        className="w-full h-full object-contain bg-black"
+                                        loop
+                                        playsInline
+                                        onEnded={() => setIsPlaying(false)}
+                                    />
+                                    {!isPlaying && (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                                            <div className="w-20 h-20 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+                                                <Play size={36} className="text-slate-700 ml-1" fill="currentColor" />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                                    <span className="text-slate-400">无视频内容</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </>
             )}
 
             <div
@@ -296,30 +400,28 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                 className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[80] flex flex-col items-center gap-2 transition-all duration-500 animate-in slide-in-from-bottom-20 fade-in"
                 style={{ transitionTimingFunction: SPRING }}
             >
-                {/* --- Layer 1: Player (Top) --- */}
-                <div className="relative group/player mb-2">
-                    {/* Connectors (Visible only when not expanded) */}
-                    {!isExpanded && (
-                        <>
-                            <div
-                                onMouseDown={(e) => onConnectStart?.(e, 'input')}
-                                className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border border-slate-200 bg-white shadow-md flex items-center justify-center opacity-0 group-hover/player:opacity-100 hover:scale-125 transition-all cursor-crosshair z-30"
-                                title="Connect Input"
-                            >
-                                <Plus size={12} className="text-slate-500" />
-                            </div>
-                            <div
-                                onMouseDown={(e) => onConnectStart?.(e, 'output')}
-                                className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border border-slate-200 bg-white shadow-md flex items-center justify-center opacity-0 group-hover/player:opacity-100 hover:scale-125 transition-all cursor-crosshair z-30"
-                                title="Connect Output"
-                            >
-                                <Plus size={12} className="text-slate-500" />
-                            </div>
-                        </>
-                    )}
+                {/* --- Layer 1: Player (Top) - 仅在非展开模式显示 --- */}
+                {!isExpanded && (
+                    <div className="relative group/player mb-2">
+                        {/* Connectors */}
+                        <div
+                            onMouseDown={(e) => onConnectStart?.(e, 'input')}
+                            className="absolute -left-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border border-slate-200 bg-white shadow-md flex items-center justify-center opacity-0 group-hover/player:opacity-100 hover:scale-125 transition-all cursor-crosshair z-30"
+                            title="Connect Input"
+                        >
+                            <Plus size={12} className="text-slate-500" />
+                        </div>
+                        <div
+                            onMouseDown={(e) => onConnectStart?.(e, 'output')}
+                            className="absolute -right-8 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border border-slate-200 bg-white shadow-md flex items-center justify-center opacity-0 group-hover/player:opacity-100 hover:scale-125 transition-all cursor-crosshair z-30"
+                            title="Connect Output"
+                        >
+                            <Plus size={12} className="text-slate-500" />
+                        </div>
 
-                    {renderPlayer()}
-                </div>
+                        {renderPlayer()}
+                    </div>
+                )}
 
                 {/* --- Layer 2: Preview Strip (Middle) --- */}
                 <div
@@ -355,10 +457,9 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                 <div
                     className="bg-white/95 backdrop-blur-2xl border border-slate-200 rounded-b-2xl rounded-t-sm shadow-[0_20px_65px_rgba(15,23,42,0.12)] p-4 flex items-center gap-4 relative z-10"
                     style={{ width: 'min(90vw, 820px)' }}
-                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onDragLeave={(e) => e.stopPropagation()}
-                    onDrop={(e) => { e.stopPropagation(); handleDrop(e); }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={handleDrop}
+                    onMouseDown={(e) => e.stopPropagation()}
                 >
                     {/* Apple Style Close Button on Left */}
                     <button onClick={onClose} className="absolute -top-3 left-0 -translate-y-full p-2 text-slate-600 hover:text-slate-900 bg-white/80 backdrop-blur rounded-full border border-slate-300 transition-colors">
@@ -369,19 +470,16 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                     <div className="flex-1 flex items-center gap-2 overflow-x-auto custom-scrollbar pb-1 min-h-[80px]">
                         {frames.map((frame, index) => (
                             <React.Fragment key={frame.id}>
-                                {/* Draggable Thumbnail */}
+                                {/* Draggable Thumbnail - 鼠标拖拽排序 */}
                                 <div
+                                    data-frame-index={index}
                                     className={`
-                                        relative w-[72px] h-[72px] shrink-0 rounded-lg overflow-hidden border transition-all duration-300 ease-out group select-none
-                                        ${draggingIndex === index ? 'opacity-50 scale-95 ring-2 ring-blue-400' : 'border-slate-300 hover:border-white/30 bg-slate-50'}
-                                        ${dragOverIndex === index ? 'translate-x-2' : ''}
+                                        relative w-[72px] h-[72px] shrink-0 rounded-lg overflow-hidden border transition-all duration-200 ease-out group select-none cursor-grab active:cursor-grabbing
+                                        ${draggingIndex === index ? 'opacity-50 scale-95 ring-2 ring-blue-400 z-50' : 'border-slate-300 hover:border-blue-400 bg-slate-50'}
                                     `}
-                                    onDragOver={(e) => handleDragOver(e, index)}
-                                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                    onDragLeave={(e) => e.stopPropagation()}
-                                    onDrop={handleDrop}
+                                    onMouseDown={(e) => handleMouseDown(e, index)}
                                 >
-                                    <img src={frame.src} className="w-full h-full object-cover pointer-events-none" />
+                                    <img src={frame.src} className="w-full h-full object-cover pointer-events-none" draggable="false" />
 
                                     {/* Index Badge */}
                                     <div className="absolute top-0.5 right-0.5 w-4 h-4 bg-white/90 rounded-full flex items-center justify-center text-[8px] font-bold text-slate-800 pointer-events-none">
@@ -390,24 +488,13 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
 
                                     {/* Delete Button (Top Left) */}
                                     <button
-                                        onClick={(e) => { e.stopPropagation(); setFrames(p => p.filter(f => f.id !== frame.id)); }}
+                                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); setFrames(p => p.filter(f => f.id !== frame.id)); }}
+                                        onMouseDown={(e) => e.stopPropagation()}
                                         className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full flex items-center justify-center bg-white/90 hover:bg-red-500 text-slate-700 hover:text-slate-900 transition-colors opacity-0 group-hover:opacity-100 z-20"
                                     >
                                         <X size={10} strokeWidth={3} />
                                     </button>
 
-                                    {/* Drag Handle (Center) */}
-                                    <div
-                                        className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing bg-slate-100/80 backdrop-blur-[1px]"
-                                        draggable
-                                        onDragStart={(e) => handleDragStart(e, index)}
-                                        onDragEnd={handleDragEnd}
-                                        onDrag={(e) => e.stopPropagation()}
-                                    >
-                                        <div className="w-8 h-8 rounded-full bg-white/80 flex items-center justify-center border border-slate-400 text-slate-800 hover:scale-110 transition-transform">
-                                            <GripVertical size={16} />
-                                        </div>
-                                    </div>
                                 </div>
 
                                 {/* Link / Transition Button */}
@@ -437,10 +524,8 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                             <div
                                 className="w-[72px] h-[72px] shrink-0 rounded-lg border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50 flex flex-col items-center justify-center gap-1 cursor-pointer transition-all group active:scale-95"
                                 onClick={() => fileInputRef.current?.click()}
-                                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                onDragLeave={(e) => e.stopPropagation()}
-                                onDrop={(e) => { e.stopPropagation(); handleDrop(e); }}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={handleDrop}
                             >
                                 <Plus size={18} className="text-slate-500 group-hover:text-slate-900 transition-colors" />
                                 <span className="text-[9px] text-slate-500 font-medium">Add</span>
@@ -450,7 +535,14 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                     </div>
 
                     {/* Right Action Column */}
-                    <div className="pl-4 border-l border-slate-300 flex flex-col gap-2 shrink-0">
+                    <div className="pl-4 border-l border-slate-300 flex flex-col gap-2 shrink-0 relative">
+                        <button
+                            onClick={() => setShowSettings(!showSettings)}
+                            className={`p-2 rounded-lg transition-colors ${showSettings ? 'bg-blue-100 text-blue-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-600'}`}
+                            title="Vidu 参数设置"
+                        >
+                            <Settings size={14} />
+                        </button>
                         <button
                             onClick={() => setFrames([])}
                             className="p-2 rounded-lg bg-slate-50 hover:bg-red-500/20 text-slate-600 hover:text-red-400 transition-colors"
@@ -469,6 +561,76 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                         >
                             {isGenerating ? <Loader2 size={18} className="animate-spin" /> : <ArrowRight size={18} strokeWidth={3} />}
                         </button>
+
+                        {/* Settings Panel */}
+                        {showSettings && (
+                            <div
+                                className="absolute bottom-full right-0 mb-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl p-4 z-50 animate-in slide-in-from-bottom-2 fade-in duration-200"
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <div className="flex items-center justify-between mb-3">
+                                    <span className="text-xs font-bold text-slate-700">Vidu 参数</span>
+                                    <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600">
+                                        <X size={12} />
+                                    </button>
+                                </div>
+
+                                {/* Model Selection */}
+                                <div className="mb-3">
+                                    <label className="text-[10px] text-slate-500 font-medium mb-1.5 flex items-center gap-1">
+                                        <Zap size={10} /> 模型
+                                    </label>
+                                    <div className="flex gap-1">
+                                        {VIDU_MODELS.map(m => (
+                                            <button
+                                                key={m.id}
+                                                onClick={() => setViduConfig(c => ({ ...c, model: m.id }))}
+                                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all ${
+                                                    viduConfig.model === m.id
+                                                        ? 'bg-blue-500 text-white'
+                                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                                }`}
+                                            >
+                                                {m.id === 'viduq2-turbo' ? 'Turbo' : 'Pro'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <p className="text-[9px] text-slate-400 mt-1">
+                                        {viduConfig.model === 'viduq2-turbo' ? '快速生成' : '高质量生成'}
+                                    </p>
+                                </div>
+
+                                {/* Resolution Selection */}
+                                <div>
+                                    <label className="text-[10px] text-slate-500 font-medium mb-1.5 flex items-center gap-1">
+                                        <Film size={10} /> 分辨率
+                                    </label>
+                                    <div className="flex gap-1">
+                                        {VIDU_RESOLUTIONS.map(r => (
+                                            <button
+                                                key={r.id}
+                                                onClick={() => setViduConfig(c => ({ ...c, resolution: r.id }))}
+                                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all ${
+                                                    viduConfig.resolution === r.id
+                                                        ? 'bg-blue-500 text-white'
+                                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                                }`}
+                                            >
+                                                {r.id}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Info */}
+                                <div className="mt-3 pt-3 border-t border-slate-100">
+                                    <p className="text-[9px] text-slate-400">
+                                        帧间时长: 2-7秒 · 最多10帧
+                                    </p>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -478,6 +640,8 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                         ref={transitionModalRef}
                         className="absolute bottom-[130px] z-[100] w-[240px] aspect-[9/16] bg-slate-50 border border-slate-300 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.9)] flex flex-col animate-in slide-in-from-bottom-4 zoom-in-95 duration-300 overflow-hidden"
                         style={{ left: '50%', transform: 'translateX(-50%)' }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
                     >
                         {/* Header */}
                         <div className="px-4 py-4 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
@@ -492,6 +656,8 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                                 placeholder="描述镜头之间的转换..."
                                 value={tempPrompt}
                                 onChange={(e) => setTempPrompt(e.target.value)}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => e.stopPropagation()}
                                 autoFocus
                             />
                         </div>
@@ -501,10 +667,12 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                             <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-xl px-3 py-2">
                                 <Clock size={12} className="text-slate-500 shrink-0" />
                                 <input
-                                    type="range" min="1" max="6" step="0.5"
+                                    type="range" min="2" max="7" step="1"
                                     value={tempDuration}
-                                    onChange={(e) => setTempDuration(parseFloat(e.target.value))}
-                                    className="flex-1 h-1 bg-slate-100 rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500 cursor-pointer"
+                                    onChange={(e) => setTempDuration(parseInt(e.target.value))}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="flex-1 h-2 bg-slate-200 rounded-full appearance-none cursor-pointer accent-blue-500"
                                 />
                                 <span className="text-[10px] font-mono text-slate-600 min-w-[24px] text-right">{tempDuration}s</span>
                             </div>

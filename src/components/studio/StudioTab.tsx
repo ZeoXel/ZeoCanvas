@@ -8,9 +8,10 @@ import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
 import { SketchEditor } from './SketchEditor';
 import { SmartSequenceDock } from './SmartSequenceDock';
+import { generateViduMultiFrame } from '@/services/viduService';
 import { SettingsModal } from './SettingsModal';
-import { AppNode, NodeType, NodeStatus, Connection, ContextMenuState, Group, Workflow, SmartSequenceItem, Canvas } from '@/types';
-import { generateImageFromText, generateVideo, analyzeVideo, editImageWithText, planStoryboard, orchestrateVideoPrompt, compileMultiFramePrompt, urlToBase64, extractLastFrame, generateAudio } from '@/services/geminiService';
+import { AppNode, NodeType, NodeStatus, Connection, ContextMenuState, Group, Workflow, SmartSequenceItem, Canvas, VideoGenerationMode } from '@/types';
+import { generateImageFromText, generateVideo, analyzeVideo, editImageWithText, planStoryboard, orchestrateVideoPrompt, urlToBase64, extractLastFrame, generateAudio } from '@/services/geminiService';
 import { getGenerationStrategy } from '@/services/videoStrategies';
 import { createMusicCustom, SunoSongInfo } from '@/services/sunoService';
 import { synthesizeSpeech, MinimaxGenerateParams } from '@/services/minimaxService';
@@ -18,7 +19,7 @@ import { saveToStorage, loadFromStorage } from '@/services/storage';
 import {
     Plus, Copy, Trash2, Type, Image as ImageIcon, Video as VideoIcon,
     ScanFace, Brush, MousePointerClick, LayoutTemplate, X, Film, Link, RefreshCw, Upload,
-    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan, Music, Mic2, FileSearch
+    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan, Music, Mic2, FileSearch, Scissors
 } from 'lucide-react';
 
 // Apple Physics Curve
@@ -222,6 +223,14 @@ export default function StudioTab() {
   const [croppingNodeId, setCroppingNodeId] = useState<string | null>(null);
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
 
+  // 组图拖拽放置预览状态
+  const [gridDragDropPreview, setGridDragDropPreview] = useState<{
+      type: 'image' | 'video';
+      src: string;
+      canvasX: number;
+      canvasY: number;
+  } | null>(null);
+
   // Refs for closures
   const nodesRef = useRef(nodes);
   const connectionsRef = useRef(connections);
@@ -306,6 +315,41 @@ export default function StudioTab() {
               setNodes(JSON.parse(JSON.stringify(canvasToLoad.nodes)));
               setConnections(JSON.parse(JSON.stringify(canvasToLoad.connections)));
               setGroups(JSON.parse(JSON.stringify(canvasToLoad.groups)));
+
+              // 恢复视口状态，如果有保存的话
+              if (canvasToLoad.pan && canvasToLoad.scale) {
+                setPan(canvasToLoad.pan);
+                setScale(canvasToLoad.scale);
+              } else if (canvasToLoad.nodes.length > 0) {
+                // 没有保存的视口状态，延迟调用 fitToContent
+                setTimeout(() => {
+                  // 使用内联的 fitToContent 逻辑
+                  const loadedNodes = canvasToLoad.nodes;
+                  if (loadedNodes.length === 0) return;
+                  const padding = 80;
+                  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                  loadedNodes.forEach((n: AppNode) => {
+                    const h = n.height || 360;
+                    const w = n.width || 420;
+                    if (n.x < minX) minX = n.x;
+                    if (n.y < minY) minY = n.y;
+                    if (n.x + w > maxX) maxX = n.x + w;
+                    if (n.y + h > maxY) maxY = n.y + h;
+                  });
+                  const contentW = maxX - minX;
+                  const contentH = maxY - minY;
+                  const scaleX = (window.innerWidth - padding * 2) / contentW;
+                  const scaleY = (window.innerHeight - padding * 2) / contentH;
+                  let newScale = Math.min(scaleX, scaleY, 1);
+                  newScale = Math.max(0.2, newScale);
+                  const contentCenterX = minX + contentW / 2;
+                  const contentCenterY = minY + contentH / 2;
+                  const newPanX = (window.innerWidth / 2) - (contentCenterX * newScale);
+                  const newPanY = (window.innerHeight / 2) - (contentCenterY * newScale);
+                  setPan({ x: newPanX, y: newPanY });
+                  setScale(newScale);
+                }, 100);
+              }
             } else {
               // 兼容旧数据：如果没有画布数据，从旧的 nodes/connections/groups 迁移
               const sNodes = await loadFromStorage<AppNode[]>('nodes');
@@ -364,7 +408,7 @@ export default function StudioTab() {
       const width = node.width || 420;
       if (['PROMPT_INPUT', 'VIDEO_ANALYZER', 'IMAGE_EDITOR'].includes(node.type)) return 360;
       if (node.type === NodeType.AUDIO_GENERATOR) return 200;
-      const [w, h] = (node.data.aspectRatio || '16:9').split(':').map(Number);
+      const [w, h] = (node.data.aspectRatio || '1:1').split(':').map(Number);
       const extra = (node.type === NodeType.VIDEO_GENERATOR && node.data.generationMode === 'CUT') ? 36 : 0;
       return ((width * h / w) + extra);
   };
@@ -512,6 +556,8 @@ export default function StudioTab() {
                  type.includes('IMAGE') ? 'doubao-seedream-4-5-251128' :
                  'gemini-2.5-flash',
           generationMode: type === NodeType.VIDEO_GENERATOR ? 'DEFAULT' : undefined,
+          // 图像/视频节点默认比例为 16:9
+          aspectRatio: (type === NodeType.IMAGE_GENERATOR || type === NodeType.VIDEO_GENERATOR || type === NodeType.VIDEO_FACTORY) ? '16:9' : undefined,
           // 音频节点默认配置
           audioMode: type === NodeType.AUDIO_GENERATOR ? defaultAudioMode : undefined,
           musicConfig: type === NodeType.AUDIO_GENERATOR ? { mv: 'chirp-v4', tags: 'pop, catchy' } : undefined,
@@ -536,7 +582,7 @@ export default function StudioTab() {
 
       // 计算节点预估高度并找到不重叠的位置
       const nodeWidth = 420;
-      const [rw, rh] = (defaults.aspectRatio || '16:9').split(':').map(Number);
+      const [rw, rh] = (defaults.aspectRatio || '1:1').split(':').map(Number);
       const nodeHeight = type === NodeType.PROMPT_INPUT || type === NodeType.VIDEO_ANALYZER ? 360 :
                          type === NodeType.AUDIO_GENERATOR ? 200 :
                          (nodeWidth * rh / rw);
@@ -569,56 +615,198 @@ export default function StudioTab() {
   const handleSketchResult = (type: 'image' | 'video', result: string, prompt: string) => {
       const centerX = (-pan.x + window.innerWidth/2)/scale - 210;
       const centerY = (-pan.y + window.innerHeight/2)/scale - 180;
-      
+
       if (type === 'image') {
           addNode(NodeType.IMAGE_GENERATOR, centerX, centerY, { image: result, prompt, status: NodeStatus.SUCCESS });
       } else {
           addNode(NodeType.VIDEO_GENERATOR, centerX, centerY, { videoUri: result, prompt, status: NodeStatus.SUCCESS });
       }
-      
+
       handleAssetGenerated(type, result, prompt || 'Sketch Output');
   };
 
-  const handleMultiFrameGenerate = async (frames: SmartSequenceItem[]): Promise<string> => {
-      const complexPrompt = compileMultiFramePrompt(frames as any[]);
-
-      try {
-          // 使用 veo3.1-components 支持多图参考
-          const res = await generateVideo(
-              complexPrompt,
-              'veo3.1-components',
-              { aspectRatio: '16:9', count: 1 },
-              frames[0].src,
-              null,
-              frames.length > 1 ? frames.map(f => f.src) : undefined
-          );
-          
-          if (res.isFallbackImage) {
-              handleAssetGenerated('image', res.uri, 'Smart Sequence Preview (Fallback)');
-          } else {
-              handleAssetGenerated('video', res.uri, 'Smart Sequence');
+  // 检查画布坐标是否在空白区域（不与任何节点重叠）
+  const isPointOnEmptyCanvas = useCallback((canvasX: number, canvasY: number): boolean => {
+      // 检查点是否在任何现有节点内部
+      for (const node of nodesRef.current) {
+          const bounds = getNodeBounds(node);
+          if (
+              canvasX >= bounds.x &&
+              canvasX <= bounds.x + bounds.width &&
+              canvasY >= bounds.y &&
+              canvasY <= bounds.y + bounds.height
+          ) {
+              return false; // 在节点上
           }
-          return res.uri;
+      }
+      // 检查是否在任何分组标题栏上（可选）
+      for (const group of groupsRef.current) {
+          if (
+              canvasX >= group.x &&
+              canvasX <= group.x + group.width &&
+              canvasY >= group.y &&
+              canvasY <= group.y + 40 // 标题栏高度约40px
+          ) {
+              return false;
+          }
+      }
+      return true; // 空白区域
+  }, []);
+
+  // 处理组图拖拽状态变化，用于显示放置预览
+  const handleGridDragStateChange = useCallback((state: { isDragging: boolean; type?: 'image' | 'video'; src?: string; screenX?: number; screenY?: number } | null) => {
+      if (!state || !state.isDragging || !state.type || !state.src || !state.screenX || !state.screenY) {
+          setGridDragDropPreview(null);
+          return;
+      }
+
+      // 将屏幕坐标转换为画布坐标
+      const rect = canvasContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const canvasX = (state.screenX - rect.left - pan.x) / scale;
+      const canvasY = (state.screenY - rect.top - pan.y) / scale;
+
+      // 仅当鼠标在空白画布区域时才显示预览
+      if (!isPointOnEmptyCanvas(canvasX, canvasY)) {
+          setGridDragDropPreview(null);
+          return;
+      }
+
+      setGridDragDropPreview({
+          type: state.type,
+          src: state.src,
+          canvasX: canvasX - 210, // 节点宽度一半
+          canvasY: canvasY - 120, // 大致居中
+      });
+  }, [pan, scale, isPointOnEmptyCanvas]);
+
+  // 从组图宫格拖拽某个结果到画布，创建独立副本节点
+  const handleDragResultToCanvas = useCallback((sourceNodeId: string, type: 'image' | 'video', src: string, screenX: number, screenY: number) => {
+      // 清除预览
+      setGridDragDropPreview(null);
+
+      // 将屏幕坐标转换为画布坐标
+      const rect = canvasContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const canvasX = (screenX - rect.left - pan.x) / scale;
+      const canvasY = (screenY - rect.top - pan.y) / scale;
+
+      // 仅当鼠标在空白画布区域时才创建节点
+      if (!isPointOnEmptyCanvas(canvasX, canvasY)) {
+          return; // 不在空白区域，不创建
+      }
+
+      // 获取源节点信息以复制相关配置
+      const sourceNode = nodesRef.current.find(n => n.id === sourceNodeId);
+      if (!sourceNode) return;
+
+      saveHistory();
+
+      // 计算节点尺寸
+      const nodeWidth = 420;
+      const ratio = sourceNode.data.aspectRatio || '16:9';
+      const [rw, rh] = ratio.split(':').map(Number);
+      const nodeHeight = (nodeWidth * rh) / rw;
+
+      // 寻找不重叠的位置
+      const { x: finalX, y: finalY } = findNonOverlappingPosition(
+          canvasX - nodeWidth / 2,
+          canvasY - nodeHeight / 2,
+          nodeWidth,
+          nodeHeight,
+          nodesRef.current,
+          'right'
+      );
+
+      // 创建新节点（复制源节点的部分配置）
+      const newNode: AppNode = {
+          id: `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          type: type === 'image' ? NodeType.IMAGE_GENERATOR : NodeType.VIDEO_GENERATOR,
+          x: finalX,
+          y: finalY,
+          width: nodeWidth,
+          title: type === 'image' ? '图片副本' : '视频副本',
+          status: NodeStatus.SUCCESS,
+          data: {
+              model: sourceNode.data.model,
+              aspectRatio: sourceNode.data.aspectRatio,
+              prompt: sourceNode.data.prompt,
+              ...(type === 'image'
+                  ? { image: src, images: [src] }
+                  : { videoUri: src, videoUris: [src] }
+              ),
+          },
+          inputs: [],
+      };
+
+      setNodes(prev => [...prev, newNode]);
+      // 选中新创建的节点
+      setSelectedNodeIds([newNode.id]);
+  }, [pan, scale, saveHistory, isPointOnEmptyCanvas]);
+
+  const handleMultiFrameGenerate = async (frames: SmartSequenceItem[], config: any): Promise<string> => {
+      try {
+          // 使用 Vidu 智能多帧 API
+          console.log('[Vidu MultiFrame] Generating with config:', config);
+          const result = await generateViduMultiFrame(frames, config);
+
+          if (!result.success) {
+              throw new Error(result.error || 'Vidu 生成失败');
+          }
+
+          if (!result.videoUrl) {
+              throw new Error('Vidu 未返回视频URL');
+          }
+
+          handleAssetGenerated('video', result.videoUrl, 'Vidu 智能多帧');
+          return result.videoUrl;
       } catch (e: any) {
-          throw new Error(e.message || "Smart Sequence Generation Failed");
+          console.error('[Vidu MultiFrame] Generation failed:', e);
+          throw new Error(e.message || "智能多帧生成失败");
       }
   };
 
 
+  // 使用 ref 存储最新的 scale 和 pan 值，避免闭包问题
+  const scaleRef = useRef(scale);
+  const panRef = useRef(pan);
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+  useEffect(() => { panRef.current = pan; }, [pan]);
+
   const handleWheel = useCallback((e: WheelEvent) => {
       e.preventDefault();
+      const rect = canvasContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
       if (e.ctrlKey || e.metaKey) {
-        const rect = canvasContainerRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const newScale = Math.min(Math.max(0.2, scale - e.deltaY * 0.001), 3);
-        const x = e.clientX - rect.left; const y = e.clientY - rect.top;
-        const scaleDiff = newScale - scale;
-        setPan(p => ({ x: p.x - (x - p.x) * (scaleDiff / scale), y: p.y - (y - p.y) * (scaleDiff / scale) }));
+        // 以鼠标位置为中心缩放
+        const currentScale = scaleRef.current;
+        const currentPan = panRef.current;
+
+        // 鼠标在容器中的位置
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // 鼠标在画布坐标系中的位置
+        const canvasX = (mouseX - currentPan.x) / currentScale;
+        const canvasY = (mouseY - currentPan.y) / currentScale;
+
+        // 计算新的缩放值（使用更平滑的缩放因子）
+        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+        const newScale = Math.min(Math.max(0.1, currentScale * zoomFactor), 5);
+
+        // 计算新的 pan 值，保持鼠标下的画布位置不变
+        const newPanX = mouseX - canvasX * newScale;
+        const newPanY = mouseY - canvasY * newScale;
+
         setScale(newScale);
+        setPan({ x: newPanX, y: newPanY });
       } else {
+        // 平移画布
         setPan(p => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
       }
-  }, [scale]);
+  }, []);
 
   // 使用原生事件监听器以支持 preventDefault（非 passive 模式）
   useEffect(() => {
@@ -754,8 +942,15 @@ export default function StudioTab() {
           }
           
           if (resizingNodeId && initialSize && resizeStartPos) {
-              const dx = (clientX - resizeStartPos.x) / scale; const dy = (clientY - resizeStartPos.y) / scale;
-              setNodes(prev => prev.map(n => n.id === resizingNodeId ? { ...n, width: Math.max(360, initialSize.width + dx), height: Math.max(240, initialSize.height + dy) } : n));
+              const dx = (clientX - resizeStartPos.x) / scale;
+              // 等比例缩放：根据宽度变化计算新尺寸
+              const aspectRatio = initialSize.width / initialSize.height;
+              const newWidth = Math.max(280, initialSize.width + dx);
+              const newHeight = newWidth / aspectRatio;
+              // 确保高度不会太小
+              if (newHeight >= 160) {
+                  setNodes(prev => prev.map(n => n.id === resizingNodeId ? { ...n, width: newWidth, height: newHeight } : n));
+              }
           }
       });
   }, [selectionRect, isDraggingCanvas, draggingNodeId, resizingNodeId, initialSize, resizeStartPos, scale, lastMousePos]);
@@ -971,13 +1166,14 @@ export default function StudioTab() {
                           const COLUMNS = 3;
                           const gapX = 40; const gapY = 40;
                           const childWidth = node.width || 420;
-                          const ratio = node.data.aspectRatio || '16:9';
+                          const ratio = node.data.aspectRatio || '1:1';
                           const [rw, rh] = ratio.split(':').map(Number);
                           const childHeight = (childWidth * rh / rw); 
                           const startX = node.x + (node.width || 420) + 150;
                           const startY = node.y; 
                           const totalRows = Math.ceil(storyboard.length / COLUMNS);
                           
+                          const usedModel = node.data.model || 'doubao-seedream-4-5-251128';
                           storyboard.forEach((shotPrompt, index) => {
                               const col = index % COLUMNS;
                               const row = Math.floor(index / COLUMNS);
@@ -987,8 +1183,8 @@ export default function StudioTab() {
                               newNodes.push({
                                   id: newNodeId, type: NodeType.IMAGE_GENERATOR, x: posX, y: posY, width: childWidth, height: childHeight,
                                   title: `分镜 ${index + 1}`, status: NodeStatus.WORKING,
-                                  data: { ...node.data, aspectRatio: ratio, prompt: shotPrompt, image: undefined, images: undefined, imageCount: 1 },
-                                  inputs: [node.id] 
+                                  data: { ...node.data, model: usedModel, aspectRatio: ratio, prompt: shotPrompt, image: undefined, images: undefined, imageCount: 1 },
+                                  inputs: [node.id]
                               });
                               newConnections.push({ from: node.id, to: newNodeId });
                           });
@@ -1005,7 +1201,7 @@ export default function StudioTab() {
                           newNodes.forEach(async (n) => {
                                try {
                                    const res = await generateImageFromText(n.data.prompt!, n.data.model!, inputImages, { aspectRatio: n.data.aspectRatio, resolution: n.data.resolution, count: 1 });
-                                   handleNodeUpdate(n.id, { image: res[0], images: res, status: NodeStatus.SUCCESS });
+                                   handleNodeUpdate(n.id, { image: res[0], images: res, model: n.data.model, aspectRatio: n.data.aspectRatio, status: NodeStatus.SUCCESS });
                                } catch (e: any) {
                                    handleNodeUpdate(n.id, { error: e.message, status: NodeStatus.ERROR });
                                }
@@ -1026,7 +1222,7 @@ export default function StudioTab() {
                   // 节点已有素材：创建新节点呈现结果（组图统一在一个节点中）
                   newNodeId = `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
                   const nodeWidth = node.width || 420;
-                  const [rw, rh] = (node.data.aspectRatio || '16:9').split(':').map(Number);
+                  const [rw, rh] = (node.data.aspectRatio || '1:1').split(':').map(Number);
                   const nodeHeight = node.height || (nodeWidth * rh / rw);
 
                   // 向右排布新节点
@@ -1060,15 +1256,17 @@ export default function StudioTab() {
               try {
                   // 获取组图数量（默认1张）
                   const imageCount = node.data.imageCount || 1;
-                  const res = await generateImageFromText(prompt, node.data.model || 'doubao-seedream-4-5-251128', inputImages, { aspectRatio: node.data.aspectRatio || '1:1', resolution: node.data.resolution, count: imageCount });
+                  const usedModel = node.data.model || 'doubao-seedream-4-5-251128';
+                  const usedAspectRatio = node.data.aspectRatio || '1:1';
+                  const res = await generateImageFromText(prompt, usedModel, inputImages, { aspectRatio: usedAspectRatio, resolution: node.data.resolution, count: imageCount });
 
                   if (shouldCreateNewNode && newNodeId) {
-                      // 有素材节点：更新新节点，组图结果统一呈现
-                      handleNodeUpdate(newNodeId, { image: res[0], images: res, imageCount });
+                      // 有素材节点：更新新节点，组图结果统一呈现（保存实际使用的模型和比例）
+                      handleNodeUpdate(newNodeId, { image: res[0], images: res, imageCount, model: usedModel, aspectRatio: usedAspectRatio });
                       setNodes(p => p.map(n => n.id === newNodeId ? { ...n, status: NodeStatus.SUCCESS } : n));
                   } else {
-                      // 空节点：结果直接在当前节点显示，组图结果统一呈现
-                      handleNodeUpdate(id, { image: res[0], images: res, imageCount });
+                      // 空节点：结果直接在当前节点显示，组图结果统一呈现（保存实际使用的模型和比例）
+                      handleNodeUpdate(id, { image: res[0], images: res, imageCount, model: usedModel, aspectRatio: usedAspectRatio });
                   }
               } catch (imgErr: any) {
                   if (shouldCreateNewNode && newNodeId) {
@@ -1084,7 +1282,7 @@ export default function StudioTab() {
               // 判断是否创建新节点：当且仅当节点本身已有视频时
               const shouldCreateNewNode = !!node.data.videoUri;
               const nodeWidth = node.width || 420;
-              const [rw, rh] = (node.data.aspectRatio || '16:9').split(':').map(Number);
+              const [rw, rh] = (node.data.aspectRatio || '1:1').split(':').map(Number);
               const nodeHeight = node.height || (nodeWidth * rh / rw);
 
               let factoryNodeId: string | null = null;
@@ -1132,12 +1330,14 @@ export default function StudioTab() {
 
               try {
                   const strategy = await getGenerationStrategy(node, inputs, prompt);
+                  const usedModel = node.data.model || 'veo3.1';
+                  const usedAspectRatio = node.data.aspectRatio || '1:1';
 
                   const res = await generateVideo(
                       strategy.finalPrompt,
-                      node.data.model || 'veo3.1',
+                      usedModel,
                       {
-                          aspectRatio: node.data.aspectRatio || '16:9',
+                          aspectRatio: usedAspectRatio,
                           count: node.data.videoCount || 1,
                           generationMode: strategy.generationMode,
                           resolution: node.data.resolution
@@ -1148,27 +1348,31 @@ export default function StudioTab() {
                   );
 
                   if (shouldCreateNewNode && factoryNodeId) {
-                      // 有视频节点：更新新节点
+                      // 有视频节点：更新新节点（保存实际使用的模型和比例）
                       if (res.isFallbackImage) {
                           handleNodeUpdate(factoryNodeId, {
                               image: res.uri,
                               videoUri: undefined,
+                              model: usedModel,
+                              aspectRatio: usedAspectRatio,
                               error: "Region restricted: Generated preview image instead."
                           });
                       } else {
-                          handleNodeUpdate(factoryNodeId, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris });
+                          handleNodeUpdate(factoryNodeId, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris, model: usedModel, aspectRatio: usedAspectRatio });
                       }
                       setNodes(p => p.map(n => n.id === factoryNodeId ? { ...n, status: NodeStatus.SUCCESS } : n));
                   } else {
-                      // 空节点：结果直接在当前节点显示
+                      // 空节点：结果直接在当前节点显示（保存实际使用的模型和比例）
                       if (res.isFallbackImage) {
                           handleNodeUpdate(id, {
                               image: res.uri,
                               videoUri: undefined,
+                              model: usedModel,
+                              aspectRatio: usedAspectRatio,
                               error: "Region restricted: Generated preview image instead."
                           });
                       } else {
-                          handleNodeUpdate(id, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris });
+                          handleNodeUpdate(id, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris, model: usedModel, aspectRatio: usedAspectRatio });
                       }
                   }
               } catch (videoErr: any) {
@@ -1184,7 +1388,7 @@ export default function StudioTab() {
               // 判断是否创建新节点：当且仅当节点本身已有视频时
               const shouldCreateNewNode = !!node.data.videoUri;
               const nodeWidth = node.width || 420;
-              const [rw, rh] = (node.data.aspectRatio || '16:9').split(':').map(Number);
+              const [rw, rh] = (node.data.aspectRatio || '1:1').split(':').map(Number);
               const nodeHeight = node.height || (nodeWidth * rh / rw);
 
               let newFactoryNodeId: string | null = null;
@@ -1238,12 +1442,14 @@ export default function StudioTab() {
                   }
 
                   const strategy = await getGenerationStrategy(node, inputs, prompt);
+                  const usedModel = node.data.model || 'veo3.1';
+                  const usedAspectRatio = node.data.aspectRatio || '1:1';
 
                   const res = await generateVideo(
                       strategy.finalPrompt,
-                      node.data.model || 'veo3.1',
+                      usedModel,
                       {
-                          aspectRatio: node.data.aspectRatio || '16:9',
+                          aspectRatio: usedAspectRatio,
                           count: node.data.videoCount || 1,
                           generationMode: strategy.generationMode,
                           resolution: node.data.resolution
@@ -1254,27 +1460,31 @@ export default function StudioTab() {
                   );
 
                   if (shouldCreateNewNode && newFactoryNodeId) {
-                      // 有视频节点：更新新节点
+                      // 有视频节点：更新新节点（保存实际使用的模型和比例）
                       if (res.isFallbackImage) {
                           handleNodeUpdate(newFactoryNodeId, {
                               image: res.uri,
                               videoUri: undefined,
+                              model: usedModel,
+                              aspectRatio: usedAspectRatio,
                               error: "Region restricted: Generated preview image instead."
                           });
                       } else {
-                          handleNodeUpdate(newFactoryNodeId, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris });
+                          handleNodeUpdate(newFactoryNodeId, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris, model: usedModel, aspectRatio: usedAspectRatio });
                       }
                       setNodes(p => p.map(n => n.id === newFactoryNodeId ? { ...n, status: NodeStatus.SUCCESS } : n));
                   } else {
-                      // 空节点：结果直接在当前节点显示
+                      // 空节点：结果直接在当前节点显示（保存实际使用的模型和比例）
                       if (res.isFallbackImage) {
                           handleNodeUpdate(id, {
                               image: res.uri,
                               videoUri: undefined,
+                              model: usedModel,
+                              aspectRatio: usedAspectRatio,
                               error: "Region restricted: Generated preview image instead."
                           });
                       } else {
-                          handleNodeUpdate(id, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris });
+                          handleNodeUpdate(id, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris, model: usedModel, aspectRatio: usedAspectRatio });
                       }
                   }
               } catch (videoErr: any) {
@@ -1432,10 +1642,18 @@ export default function StudioTab() {
     const now = Date.now();
     setCanvases(prev => prev.map(c =>
       c.id === currentCanvasId
-        ? { ...c, nodes: JSON.parse(JSON.stringify(nodes)), connections: JSON.parse(JSON.stringify(connections)), groups: JSON.parse(JSON.stringify(groups)), updatedAt: now }
+        ? {
+            ...c,
+            nodes: JSON.parse(JSON.stringify(nodes)),
+            connections: JSON.parse(JSON.stringify(connections)),
+            groups: JSON.parse(JSON.stringify(groups)),
+            pan: { ...pan },
+            scale: scale,
+            updatedAt: now
+          }
         : c
     ));
-  }, [currentCanvasId, nodes, connections, groups]);
+  }, [currentCanvasId, nodes, connections, groups, pan, scale]);
 
   const createNewCanvas = useCallback(() => {
     // 先保存当前画布
@@ -1451,7 +1669,9 @@ export default function StudioTab() {
       connections: [],
       groups: [],
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      pan: { x: 0, y: 0 },
+      scale: 1
     };
 
     setCanvases(prev => [newCanvas, ...prev]);
@@ -1461,6 +1681,9 @@ export default function StudioTab() {
     setGroups([]);
     setSelectedNodeIds([]);
     setSelectedGroupId(null);
+    // 重置视口
+    setPan({ x: 0, y: 0 });
+    setScale(1);
   }, [currentCanvasId, nodes.length, canvases.length, saveCurrentCanvas]);
 
   const selectCanvas = useCallback((id: string) => {
@@ -1480,6 +1703,46 @@ export default function StudioTab() {
       setCurrentCanvasId(id);
       setSelectedNodeIds([]);
       setSelectedGroupId(null);
+
+      // 恢复视口状态
+      if (canvas.pan && canvas.scale) {
+        setPan(canvas.pan);
+        setScale(canvas.scale);
+      } else {
+        // 没有保存的视口状态，重置并定位到内容
+        if (canvas.nodes.length > 0) {
+          setTimeout(() => {
+            // 内联 fitToContent 逻辑
+            const loadedNodes = canvas.nodes;
+            if (loadedNodes.length === 0) return;
+            const padding = 80;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            loadedNodes.forEach((n: AppNode) => {
+              const h = n.height || 360;
+              const w = n.width || 420;
+              if (n.x < minX) minX = n.x;
+              if (n.y < minY) minY = n.y;
+              if (n.x + w > maxX) maxX = n.x + w;
+              if (n.y + h > maxY) maxY = n.y + h;
+            });
+            const contentW = maxX - minX;
+            const contentH = maxY - minY;
+            const scaleX = (window.innerWidth - padding * 2) / contentW;
+            const scaleY = (window.innerHeight - padding * 2) / contentH;
+            let newScale = Math.min(scaleX, scaleY, 1);
+            newScale = Math.max(0.2, newScale);
+            const contentCenterX = minX + contentW / 2;
+            const contentCenterY = minY + contentH / 2;
+            const newPanX = (window.innerWidth / 2) - (contentCenterX * newScale);
+            const newPanY = (window.innerHeight / 2) - (contentCenterY * newScale);
+            setPan({ x: newPanX, y: newPanY });
+            setScale(newScale);
+          }, 100);
+        } else {
+          setPan({ x: 0, y: 0 });
+          setScale(1);
+        }
+      }
     }
   }, [currentCanvasId, canvases, saveCurrentCanvas]);
 
@@ -1489,6 +1752,8 @@ export default function StudioTab() {
       setNodes([]);
       setConnections([]);
       setGroups([]);
+      setPan({ x: 0, y: 0 });
+      setScale(1);
       return;
     }
 
@@ -1501,6 +1766,14 @@ export default function StudioTab() {
         setConnections(JSON.parse(JSON.stringify(firstCanvas.connections)));
         setGroups(JSON.parse(JSON.stringify(firstCanvas.groups)));
         setCurrentCanvasId(firstCanvas.id);
+        // 恢复视口状态
+        if (firstCanvas.pan && firstCanvas.scale) {
+          setPan(firstCanvas.pan);
+          setScale(firstCanvas.scale);
+        } else {
+          setPan({ x: 0, y: 0 });
+          setScale(1);
+        }
       }
       return newCanvases;
     });
@@ -1943,15 +2216,17 @@ export default function StudioTab() {
                       e.stopPropagation(); e.preventDefault(); // 防止拖拽选中文本
                       const n = nodes.find(x => x.id === id);
                       if (n) {
-                          const cx = n.x + w/2; const cy = n.y + 160; 
+                          const cx = n.x + w/2; const cy = n.y + 160;
                           const pGroup = groups.find(g => { return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height; });
                           setDraggingNodeParentGroupId(pGroup?.id || null);
                           let siblingNodeIds: string[] = [];
                           if (pGroup) { siblingNodeIds = nodes.filter(other => { if (other.id === id) return false; const b = getNodeBounds(other); const ocx = b.x + b.width/2; const ocy = b.y + b.height/2; return ocx > pGroup.x && ocx < pGroup.x + pGroup.width && ocy > pGroup.y && ocy < pGroup.y + pGroup.height; }).map(s => s.id); }
                           resizeContextRef.current = { nodeId: id, initialWidth: w, initialHeight: h, startX: e.clientX, startY: e.clientY, parentGroupId: pGroup?.id || null, siblingNodeIds };
                       }
-                      setResizingNodeId(id); setInitialSize({ width: w, height: h }); setResizeStartPos({ x: e.clientX, y: e.clientY }); 
+                      setResizingNodeId(id); setInitialSize({ width: w, height: h }); setResizeStartPos({ x: e.clientX, y: e.clientY });
                   }}
+                  onDragResultToCanvas={handleDragResultToCanvas}
+                  onGridDragStateChange={handleGridDragStateChange}
                   isSelected={selectedNodeIds.includes(node.id)} 
                   inputAssets={node.inputs.map(i => nodes.find(n => n.id === i)).filter(n => n && (n.data.image || n.data.videoUri || n.data.croppedFrame)).slice(0, 6).map(n => ({ id: n!.id, type: (n!.data.croppedFrame || n!.data.image) ? 'image' : 'video', src: n!.data.croppedFrame || n!.data.image || n!.data.videoUri! }))}
                   onInputReorder={(nodeId, newOrder) => { const node = nodes.find(n => n.id === nodeId); if (node) { setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, inputs: newOrder } : n)); } }}
@@ -1960,6 +2235,39 @@ export default function StudioTab() {
               ))}
 
               {selectionRect && <div className="absolute border border-cyan-500/40 bg-cyan-500/10 rounded-lg pointer-events-none" style={{ left: (Math.min(selectionRect.startX, selectionRect.currentX) - pan.x) / scale, top: (Math.min(selectionRect.startY, selectionRect.currentY) - pan.y) / scale, width: Math.abs(selectionRect.currentX - selectionRect.startX) / scale, height: Math.abs(selectionRect.currentY - selectionRect.startY) / scale }} />}
+
+              {/* 组图拖拽放置预览 - 显示节点将被创建的位置 */}
+              {gridDragDropPreview && (
+                  <div
+                      className="absolute pointer-events-none rounded-[24px] border-2 border-dashed border-cyan-400 bg-cyan-500/10 backdrop-blur-sm"
+                      style={{
+                          left: gridDragDropPreview.canvasX,
+                          top: gridDragDropPreview.canvasY,
+                          width: 420,
+                          height: 236, // 16:9 比例
+                          transition: 'left 0.05s ease-out, top 0.05s ease-out',
+                      }}
+                  >
+                      {/* 预览内容 */}
+                      <div className="absolute inset-2 rounded-[20px] overflow-hidden opacity-60">
+                          {gridDragDropPreview.type === 'image' ? (
+                              <img src={gridDragDropPreview.src} className="w-full h-full object-cover" />
+                          ) : (
+                              <video src={gridDragDropPreview.src} className="w-full h-full object-cover" muted />
+                          )}
+                      </div>
+                      {/* 中心指示器 */}
+                      <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="w-12 h-12 rounded-full bg-cyan-500/30 border-2 border-cyan-400 flex items-center justify-center animate-pulse">
+                              <Plus size={24} className="text-cyan-500" />
+                          </div>
+                      </div>
+                      {/* 位置标签 */}
+                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-3 py-1 bg-cyan-500 rounded-full text-[10px] font-bold text-white whitespace-nowrap shadow-lg">
+                          新节点将在此创建
+                      </div>
+                  </div>
+              )}
           </div>
 
           {contextMenu && (
@@ -1976,7 +2284,7 @@ export default function StudioTab() {
                   {contextMenuTarget?.type === 'create' && (
                       <>
                           <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">创建新节点</div>
-                          {[NodeType.PROMPT_INPUT, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.VIDEO_FACTORY, NodeType.AUDIO_GENERATOR, NodeType.VIDEO_ANALYZER, NodeType.IMAGE_EDITOR].map(t => { const ItemIcon = getNodeIcon(t); return ( <button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x-pan.x)/scale, (contextMenu.y-pan.y)/scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600" /> {getNodeNameCN(t)} </button> ); })}
+                          {[NodeType.PROMPT_INPUT, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.VIDEO_ANALYZER, NodeType.IMAGE_EDITOR].map(t => { const ItemIcon = getNodeIcon(t); return ( <button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x-pan.x)/scale, (contextMenu.y-pan.y)/scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600" /> {getNodeNameCN(t)} </button> ); })}
                       </>
                   )}
                   {contextMenuTarget?.type === 'group' && (
@@ -1996,28 +2304,30 @@ export default function StudioTab() {
                       const hasVideo = !!sourceNode.data.videoUri;
 
                       // 根据上游素材类型确定可用的下游节点类型
-                      let availableTypes: { type: NodeType, label: string, icon: any, color: string }[] = [];
+                      // generationMode: 用于 VIDEO_FACTORY 节点预设生成模式
+                      let availableTypes: { type: NodeType, label: string, icon: any, color: string, generationMode?: VideoGenerationMode }[] = [];
                       if (hasImage) {
                           availableTypes = [
                               { type: NodeType.IMAGE_GENERATOR, label: '继续编辑图片', icon: ImageIcon, color: 'text-blue-500' },
                               { type: NodeType.VIDEO_GENERATOR, label: '生成视频', icon: Film, color: 'text-purple-500' },
-                              { type: NodeType.VIDEO_FACTORY, label: '视频工厂', icon: VideoIcon, color: 'text-violet-500' },
                           ];
                       } else if (hasVideo) {
                           availableTypes = [
-                              { type: NodeType.VIDEO_GENERATOR, label: '继续编辑视频', icon: Film, color: 'text-purple-500' },
-                              { type: NodeType.VIDEO_FACTORY, label: '视频工厂', icon: VideoIcon, color: 'text-violet-500' },
+                              { type: NodeType.VIDEO_FACTORY, label: '剧情延展', icon: Film, color: 'text-purple-500', generationMode: 'CONTINUE' },
+                              { type: NodeType.VIDEO_FACTORY, label: '局部分镜', icon: Scissors, color: 'text-orange-500', generationMode: 'CUT' },
                               { type: NodeType.VIDEO_ANALYZER, label: '视频分析', icon: FileSearch, color: 'text-emerald-500' },
                           ];
                       }
 
                       if (availableTypes.length === 0) return null;
 
-                      const handleCreateDownstreamNode = (nodeType: NodeType) => {
+                      const handleCreateDownstreamNode = (nodeType: NodeType, generationMode?: VideoGenerationMode) => {
                           saveHistory();
                           const nodeWidth = 420;
-                          const [rw, rh] = (sourceNode.data.aspectRatio || '16:9').split(':').map(Number);
-                          const nodeHeight = nodeType === NodeType.VIDEO_ANALYZER ? 360 : (nodeWidth * rh / rw);
+                          const [rw, rh] = (sourceNode.data.aspectRatio || '1:1').split(':').map(Number);
+                          // CUT 模式需要额外高度显示时间轴
+                          const extraHeight = (nodeType === NodeType.VIDEO_FACTORY && generationMode === 'CUT') ? 36 : 0;
+                          const nodeHeight = nodeType === NodeType.VIDEO_ANALYZER ? 360 : (nodeWidth * rh / rw) + extraHeight;
 
                           // 鼠标释放位置对应新节点的左侧连接点位置
                           // 左连接点相对节点: x = -12px, y = 节点高度/2
@@ -2031,16 +2341,24 @@ export default function StudioTab() {
                           // 创建新节点
                           const newNodeId = `n-${Date.now()}-${Math.floor(Math.random()*1000)}`;
 
-                          const typeMap: Record<string, string> = {
-                              [NodeType.IMAGE_GENERATOR]: '图片生成',
-                              [NodeType.VIDEO_GENERATOR]: '视频生成',
-                              [NodeType.VIDEO_FACTORY]: '视频工厂',
-                              [NodeType.VIDEO_ANALYZER]: '视频分析',
+                          // 根据生成模式设置标题
+                          const getTitleByMode = (): string => {
+                              if (nodeType === NodeType.VIDEO_FACTORY && generationMode) {
+                                  if (generationMode === 'CONTINUE') return '剧情延展';
+                                  if (generationMode === 'CUT') return '局部分镜';
+                              }
+                              const typeMap: Record<string, string> = {
+                                  [NodeType.IMAGE_GENERATOR]: '图片生成',
+                                  [NodeType.VIDEO_GENERATOR]: '视频生成',
+                                  [NodeType.VIDEO_FACTORY]: '视频工厂',
+                                  [NodeType.VIDEO_ANALYZER]: '视频分析',
+                              };
+                              return typeMap[nodeType] || '新节点';
                           };
 
                           const defaultModel = nodeType === NodeType.VIDEO_GENERATOR ? 'veo3.1' :
                                                nodeType === NodeType.VIDEO_ANALYZER ? 'gemini-2.5-flash' :
-                                               'doubao-seedream-4-5-251128';
+                                               'veo3.1'; // VIDEO_FACTORY 也使用视频模型
 
                           const newNode: AppNode = {
                               id: newNodeId,
@@ -2049,11 +2367,12 @@ export default function StudioTab() {
                               y: newY,
                               width: nodeWidth,
                               height: nodeHeight,
-                              title: typeMap[nodeType] || '新节点',
+                              title: getTitleByMode(),
                               status: NodeStatus.IDLE,
                               data: {
                                   model: defaultModel,
-                                  aspectRatio: sourceNode.data.aspectRatio || '16:9',
+                                  aspectRatio: sourceNode.data.aspectRatio || '1:1',
+                                  ...(generationMode && { generationMode }), // 设置预选的生成模式
                               },
                               inputs: [sourceNode.id]
                           };
@@ -2068,11 +2387,11 @@ export default function StudioTab() {
                               <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
                                   {hasImage ? '图片' : '视频'}后续操作
                               </div>
-                              {availableTypes.map(({ type, label, icon: Icon, color }) => (
+                              {availableTypes.map(({ type, label, icon: Icon, color, generationMode }, idx) => (
                                   <button
-                                      key={type}
+                                      key={`${type}-${generationMode || idx}`}
                                       className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg flex items-center gap-2.5 transition-colors"
-                                      onClick={() => handleCreateDownstreamNode(type)}
+                                      onClick={() => handleCreateDownstreamNode(type, generationMode)}
                                   >
                                       <Icon size={12} className={color} /> {label}
                                   </button>
