@@ -241,6 +241,8 @@ export default function StudioTab() {
   const rafRef = useRef<number | null>(null); // For RAF Throttling
   const canvasContainerRef = useRef<HTMLDivElement>(null); // Canvas container ref for coordinate offset
   const nodeRefsMap = useRef<Map<string, HTMLDivElement>>(new Map()); // 节点 DOM 引用，用于直接操作
+  const connectionPathsRef = useRef<Map<string, SVGPathElement>>(new Map()); // 连接线 SVG path 引用
+  const dragPositionsRef = useRef<Map<string, { x: number, y: number }>>(new Map()); // 拖拽中节点的实时位置
   
   // Replacement Input Refs
   const replaceVideoInputRef = useRef<HTMLInputElement>(null);
@@ -425,6 +427,46 @@ export default function StudioTab() {
       const h = node.height || getApproxNodeHeight(node);
       const w = node.width || 420;
       return { x: node.x, y: node.y, width: w, height: h, r: node.x + w, b: node.y + h };
+  };
+
+  // 获取节点的实时位置（优先使用拖拽位置）
+  const getNodePosition = (nodeId: string) => {
+      const dragPos = dragPositionsRef.current.get(nodeId);
+      if (dragPos) return dragPos;
+      const node = nodesRef.current.find(n => n.id === nodeId);
+      return node ? { x: node.x, y: node.y } : null;
+  };
+
+  // 更新与指定节点相关的所有连接线
+  const updateConnectionPaths = (nodeIds: string[]) => {
+      const nodeIdSet = new Set(nodeIds);
+      connectionsRef.current.forEach(conn => {
+          if (!nodeIdSet.has(conn.from) && !nodeIdSet.has(conn.to)) return;
+
+          const pathEl = connectionPathsRef.current.get(`${conn.from}-${conn.to}`);
+          const hitPathEl = connectionPathsRef.current.get(`${conn.from}-${conn.to}-hit`);
+          if (!pathEl) return;
+
+          const fromPos = getNodePosition(conn.from);
+          const toPos = getNodePosition(conn.to);
+          if (!fromPos || !toPos) return;
+
+          const fromNode = nodesRef.current.find(n => n.id === conn.from);
+          const toNode = nodesRef.current.find(n => n.id === conn.to);
+          if (!fromNode || !toNode) return;
+
+          const fHeight = fromNode.height || getApproxNodeHeight(fromNode);
+          const tHeight = toNode.height || getApproxNodeHeight(toNode);
+          const fx = fromPos.x + (fromNode.width || 420) + 3;
+          let fy = fromPos.y + fHeight / 2;
+          const tx = toPos.x - 3;
+          let ty = toPos.y + tHeight / 2;
+          if (Math.abs(fy - ty) < 0.5) ty += 0.5;
+
+          const d = `M ${fx} ${fy} C ${fx + (tx - fx) * 0.5} ${fy} ${tx - (tx - fx) * 0.5} ${ty} ${tx} ${ty}`;
+          pathEl.setAttribute('d', d);
+          if (hitPathEl) hitPathEl.setAttribute('d', d);
+      });
   };
 
   // 检测两个矩形是否重叠
@@ -948,13 +990,24 @@ export default function StudioTab() {
              if (mainEl) {
                  mainEl.style.transform = `translate(${proposedX}px, ${proposedY}px)`;
              }
+             // 更新拖拽位置 ref（用于连接线计算）
+             dragPositionsRef.current.set(draggingNodeId, { x: proposedX, y: proposedY });
+             const affectedNodeIds = [draggingNodeId];
+
              // 同步移动其他选中节点
              otherSelectedNodes?.forEach(on => {
+                 const newX = on.startX + actualDx;
+                 const newY = on.startY + actualDy;
                  const el = nodeRefsMap.current.get(on.id);
                  if (el) {
-                     el.style.transform = `translate(${on.startX + actualDx}px, ${on.startY + actualDy}px)`;
+                     el.style.transform = `translate(${newX}px, ${newY}px)`;
                  }
+                 dragPositionsRef.current.set(on.id, { x: newX, y: newY });
+                 affectedNodeIds.push(on.id);
              });
+
+             // 更新相关连接线 ⚡
+             updateConnectionPaths(affectedNodeIds);
              // 不调用 setNodes()！
 
           } else if (draggingNodeId) {
@@ -1022,6 +1075,9 @@ export default function StudioTab() {
               return n;
           }));
       }
+
+      // 清除拖拽位置缓存
+      dragPositionsRef.current.clear();
 
       if (draggingNodeId || resizingNodeId || dragGroupRef.current) saveHistory();
 
@@ -2026,9 +2082,11 @@ export default function StudioTab() {
                       const d = `M ${fx} ${fy} C ${fx + (tx-fx)*0.5} ${fy} ${tx - (tx-fx)*0.5} ${ty} ${tx} ${ty}`;
                       // 自动连接（批量生产）使用虚线样式
                       const isAutoConnection = conn.isAuto;
+                      const connKey = `${conn.from}-${conn.to}`;
                       return (
-                          <g key={`${conn.from}-${conn.to}`} className="pointer-events-auto group/line">
+                          <g key={connKey} className="pointer-events-auto group/line">
                               <path
+                                  ref={(el) => { if (el) connectionPathsRef.current.set(connKey, el); else connectionPathsRef.current.delete(connKey); }}
                                   d={d}
                                   stroke={isAutoConnection ? "url(#autoGradient)" : "url(#gradient)"}
                                   strokeWidth={isAutoConnection ? "2" : "3"}
@@ -2037,7 +2095,7 @@ export default function StudioTab() {
                                   strokeDasharray={isAutoConnection ? "8 4" : "none"}
                                   className="transition-colors duration-300 group-hover/line:stroke-white group-hover/line:stroke-opacity-40"
                               />
-                              <path d={d} stroke="transparent" strokeWidth="15" fill="none" style={{ cursor: 'pointer' }} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: `${conn.from}-${conn.to}` }); setContextMenuTarget({ type: 'connection', from: conn.from, to: conn.to }); }} />
+                              <path ref={(el) => { if (el) connectionPathsRef.current.set(`${connKey}-hit`, el); else connectionPathsRef.current.delete(`${connKey}-hit`); }} d={d} stroke="transparent" strokeWidth="15" fill="none" style={{ cursor: 'pointer' }} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: connKey }); setContextMenuTarget({ type: 'connection', from: conn.from, to: conn.to }); }} />
                           </g>
                       );
                   })}
