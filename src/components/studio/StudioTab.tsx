@@ -222,6 +222,7 @@ export default function StudioTab() {
   const [expandedMedia, setExpandedMedia] = useState<any>(null);
   const [croppingNodeId, setCroppingNodeId] = useState<string | null>(null);
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
+  const [videoToCrop, setVideoToCrop] = useState<string | null>(null); // 视频帧选择源
 
   // 组图拖拽放置预览状态
   const [gridDragDropPreview, setGridDragDropPreview] = useState<{
@@ -1669,14 +1670,7 @@ export default function StudioTab() {
       }
   }, [handleNodeUpdate]);
 
-  
-  const saveCurrentAsWorkflow = () => {
-      const thumbnailNode = nodes.find(n => n.data.image);
-      const thumbnail = thumbnailNode?.data.image || '';
-      const newWf: Workflow = { id: `wf-${Date.now()}`, title: `工作流 ${new Date().toLocaleDateString()}`, thumbnail, nodes: JSON.parse(JSON.stringify(nodes)), connections: JSON.parse(JSON.stringify(connections)), groups: JSON.parse(JSON.stringify(groups)) };
-      setWorkflows(prev => [newWf, ...prev]);
-  };
-  
+
   const saveGroupAsWorkflow = (groupId: string) => {
       const group = groups.find(g => g.id === groupId);
       if (!group) return;
@@ -2166,7 +2160,7 @@ export default function StudioTab() {
 
               {nodes.map(node => (
               <Node
-                  key={node.id} node={node} onUpdate={handleNodeUpdate} onAction={handleNodeAction} onDelete={(id) => deleteNodes([id])} onExpand={setExpandedMedia} onCrop={(id, img) => { setCroppingNodeId(id); setImageToCrop(img); }}
+                  key={node.id} node={node} onUpdate={handleNodeUpdate} onAction={handleNodeAction} onDelete={(id) => deleteNodes([id])} onExpand={setExpandedMedia} onCrop={(id, src, type) => { setCroppingNodeId(id); if (type === 'video') { setVideoToCrop(src); setImageToCrop(null); } else { setImageToCrop(src); setVideoToCrop(null); } }}
                   onNodeMouseDown={(e, id) => {
                       e.stopPropagation();
                       e.preventDefault(); // 防止拖拽选中文本
@@ -2407,8 +2401,8 @@ export default function StudioTab() {
                           const nodeWidth = 420;
                           // 新节点始终使用 16:9 默认比例
                           const [rw, rh] = [16, 9];
-                          // CUT 模式需要额外高度显示时间轴
-                          const extraHeight = (nodeType === NodeType.VIDEO_FACTORY && generationMode === 'CUT') ? 36 : 0;
+                          // 局部分镜按钮改为悬浮，不需要额外高度
+                          const extraHeight = 0;
                           const nodeHeight = nodeType === NodeType.VIDEO_ANALYZER ? 360 : (nodeWidth * rh / rw) + extraHeight;
 
                           // 鼠标释放位置对应新节点的左侧连接点位置
@@ -2599,7 +2593,7 @@ export default function StudioTab() {
               </div>
           )}
           
-          {croppingNodeId && imageToCrop && <ImageCropper imageSrc={imageToCrop} onCancel={() => {setCroppingNodeId(null); setImageToCrop(null);}} onConfirm={(b) => {handleNodeUpdate(croppingNodeId, {croppedFrame: b}); setCroppingNodeId(null); setImageToCrop(null);}} />}
+          {croppingNodeId && (imageToCrop || videoToCrop) && <ImageCropper imageSrc={imageToCrop || undefined} videoSrc={videoToCrop || undefined} onCancel={() => {setCroppingNodeId(null); setImageToCrop(null); setVideoToCrop(null);}} onConfirm={(b) => {handleNodeUpdate(croppingNodeId, {croppedFrame: b}); setCroppingNodeId(null); setImageToCrop(null); setVideoToCrop(null);}} />}
           <ExpandedView media={expandedMedia} onClose={() => setExpandedMedia(null)} />
           {isSketchEditorOpen && <SketchEditor onClose={() => setIsSketchEditorOpen(false)} onGenerate={handleSketchResult} />}
           <SmartSequenceDock 
@@ -2626,12 +2620,6 @@ export default function StudioTab() {
               assetHistory={assetHistory}
               onHistoryItemClick={(item) => { const type = item.type.includes('image') ? NodeType.IMAGE_GENERATOR : NodeType.VIDEO_GENERATOR; const data = item.type === 'image' ? { image: item.src } : { videoUri: item.src }; addNode(type, undefined, undefined, data); }}
               onDeleteAsset={(id) => setAssetHistory(prev => prev.filter(a => a.id !== id))}
-              workflows={workflows}
-              selectedWorkflowId={selectedWorkflowId}
-              onSelectWorkflow={loadWorkflow}
-              onSaveWorkflow={saveCurrentAsWorkflow}
-              onDeleteWorkflow={deleteWorkflow}
-              onRenameWorkflow={renameWorkflow}
               canvases={canvases}
               currentCanvasId={currentCanvasId}
               onNewCanvas={createNewCanvas}

@@ -2,12 +2,12 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
-    Plus, RotateCcw, History, MessageSquare, FolderHeart, X,
-    ImageIcon, Video as VideoIcon, Film, Save, FolderPlus,
-    Edit, Trash2, Box, ScanFace, Brush, Type, Workflow as WorkflowIcon,
+    Plus, RotateCcw, History, MessageSquare, X,
+    ImageIcon, Video as VideoIcon, Film,
+    Edit, Trash2, ScanFace, Brush, Type,
     Clapperboard, Mic2, Layers
 } from 'lucide-react';
-import { NodeType, Workflow, Canvas } from '@/types';
+import { NodeType, Canvas } from '@/types';
 
 interface SidebarDockProps {
     onAddNode: (type: NodeType) => void;
@@ -23,14 +23,6 @@ interface SidebarDockProps {
     assetHistory: any[];
     onHistoryItemClick: (item: any) => void;
     onDeleteAsset: (id: string) => void;
-
-    // Workflow Props
-    workflows: Workflow[];
-    selectedWorkflowId: string | null;
-    onSelectWorkflow: (id: string | null) => void;
-    onSaveWorkflow: () => void;
-    onDeleteWorkflow: (id: string) => void;
-    onRenameWorkflow: (id: string, title: string) => void;
 
     // Canvas Management
     canvases: Canvas[];
@@ -249,12 +241,6 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
     assetHistory,
     onHistoryItemClick,
     onDeleteAsset,
-    workflows,
-    selectedWorkflowId,
-    onSelectWorkflow,
-    onSaveWorkflow,
-    onDeleteWorkflow,
-    onRenameWorkflow,
     canvases,
     currentCanvasId,
     onNewCanvas,
@@ -262,11 +248,10 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
     onDeleteCanvas,
     onRenameCanvas
 }) => {
-    const [activePanel, setActivePanel] = useState<'history' | 'workflow' | 'add' | 'canvas' | null>(null);
+    const [activePanel, setActivePanel] = useState<'history' | 'add' | 'canvas' | null>(null);
     const [activeHistoryTab, setActiveHistoryTab] = useState<'image' | 'video'>('image');
-    const [editingWorkflowId, setEditingWorkflowId] = useState<string | null>(null);
     const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
-    const [contextMenu, setContextMenu] = useState<{ visible: boolean, x: number, y: number, id: string, type: 'workflow' | 'history' | 'canvas' } | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ visible: boolean, x: number, y: number, id: string, type: 'history' | 'canvas' } | null>(null);
     const [isPanelVisible, setIsPanelVisible] = useState(false); // 控制面板可见性动画
     const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const openTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -405,75 +390,6 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
             );
         }
 
-        if (activePanel === 'workflow') {
-            return (
-                <>
-                    <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-                        <span className="text-xs font-bold uppercase tracking-widest text-white/50">
-                            我的工作流
-                        </span>
-                        <button onClick={onSaveWorkflow} className="p-1.5 bg-blue-500/20 text-blue-400 hover:bg-blue-500 hover:text-slate-900 rounded-md transition-colors" title="保存当前工作流">
-                            <Save size={14} />
-                        </button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-3 custom-scrollbar space-y-3 relative">
-                        {workflows.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-10 text-slate-500 opacity-60 select-none">
-                                <FolderHeart size={48} strokeWidth={1} className="mb-3 opacity-50" />
-                                <span className="text-[10px] font-medium tracking-widest uppercase text-center">空空如也<br/>保存您的第一个工作流</span>
-                            </div>
-                        ) : (
-                            workflows.map(wf => (
-                                <div 
-                                    key={wf.id} 
-                                    className={`
-                                        relative p-2 rounded-xl border bg-slate-100 group transition-all duration-300 cursor-grab active:cursor-grabbing hover:bg-slate-50
-                                        ${selectedWorkflowId === wf.id ? 'border-blue-500/50 ring-1 ring-cyan-500/20' : 'border-slate-200 hover:border-slate-400'}
-                                    `}
-                                    draggable={true}
-                                    onDragStart={(e) => {
-                                        e.dataTransfer.setData('application/workflow-id', wf.id);
-                                        e.dataTransfer.effectAllowed = 'copy';
-                                    }}
-                                    onClick={(e) => { e.stopPropagation(); onSelectWorkflow(wf.id); }}
-                                    onDoubleClick={(e) => { e.stopPropagation(); setEditingWorkflowId(wf.id); }}
-                                    onContextMenu={(e) => { 
-                                        e.preventDefault(); 
-                                        e.stopPropagation(); 
-                                        setContextMenu({visible: true, x: e.clientX, y: e.clientY, id: wf.id, type: 'workflow'}); 
-                                    }}
-                                >
-                                    <div className="aspect-[2/1] bg-white/70 rounded-lg mb-2 overflow-hidden relative">
-                                        {wf.thumbnail ? (
-                                            <img src={wf.thumbnail} className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" draggable={false} />
-                                        ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-slate-600">
-                                                <WorkflowIcon size={24} />
-                                            </div>
-                                        )}
-                                    </div>
-                                    <div className="flex items-center justify-between px-1">
-                                        {editingWorkflowId === wf.id ? (
-                                            <input 
-                                                className="bg-white/80 border border-blue-500/50 rounded px-1 text-xs text-slate-900 w-full outline-none"
-                                                defaultValue={wf.title}
-                                                autoFocus
-                                                onBlur={(e) => { onRenameWorkflow(wf.id, e.target.value); setEditingWorkflowId(null); }}
-                                                onKeyDown={(e) => { if(e.key === 'Enter') { onRenameWorkflow(wf.id, e.currentTarget.value); setEditingWorkflowId(null); } }}
-                                            />
-                                        ) : (
-                                            <span className="text-xs font-medium text-slate-600 truncate select-none group-hover:text-slate-900 transition-colors">{wf.title}</span>
-                                        )}
-                                        <span className="text-[9px] text-slate-600 font-mono">{wf.nodes.length} 节点</span>
-                                    </div>
-                                </div>
-                            ))
-                        )}
-                    </div>
-                </>
-            );
-        }
-
         if (activePanel === 'canvas') {
             const formatDate = (timestamp: number) => {
                 const date = new Date(timestamp);
@@ -586,14 +502,13 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
             >
                 {[
                     { id: 'add', icon: Plus, tooltip: '添加节点' },
-                    { id: 'workflow', icon: FolderHeart, tooltip: '工作流' },
                     { id: 'smart_sequence', icon: Clapperboard, action: onToggleMultiFrame, active: isMultiFrameOpen, tooltip: '智能多帧' },
                     { id: 'history', icon: History, tooltip: '历史记录' },
                     { id: 'chat', icon: MessageSquare, action: onToggleChat, active: isChatOpen, tooltip: '对话' },
                     { id: 'undo', icon: RotateCcw, action: onUndo, tooltip: '撤销' },
                 ].map(item => {
                     const isActive = activePanel === item.id || item.active;
-                    const hasPanel = ['add', 'history', 'workflow', 'canvas'].includes(item.id);
+                    const hasPanel = ['add', 'history', 'canvas'].includes(item.id);
                     return (
                         <div key={item.id} className="relative group">
                             <button
@@ -686,16 +601,6 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
                          <button className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/20 rounded-md flex items-center gap-2" onClick={() => { onDeleteAsset(contextMenu.id); setContextMenu(null); }}>
                              <Trash2 size={12} /> 删除
                          </button>
-                    )}
-                    {contextMenu.type === 'workflow' && (
-                        <>
-                            <button className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-100 rounded-md flex items-center gap-2" onClick={() => { setEditingWorkflowId(contextMenu.id); setContextMenu(null); }}>
-                                <Edit size={12} /> 重命名
-                            </button>
-                            <button className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/20 rounded-md flex items-center gap-2" onClick={() => { onDeleteWorkflow(contextMenu.id); setContextMenu(null); }}>
-                                <Trash2 size={12} /> 删除
-                            </button>
-                        </>
                     )}
                     {contextMenu.type === 'canvas' && (
                         <>

@@ -1,10 +1,30 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Check, Crop, Move } from 'lucide-react';
+import { X, Check, Crop, Move, Film, Loader2 } from 'lucide-react';
+import { globalVideoBlobCache } from './Node';
+
+// Helper: Check if URL is from Volcengine (needs proxy)
+const isVolcengineUrl = (url: string): boolean => {
+    try {
+        const u = new URL(url);
+        return u.hostname.includes('volccdn.com') || u.hostname.includes('bytecdn.cn') || u.hostname.includes('volces.com') || u.hostname.includes('tos-cn-beijing');
+    } catch {
+        return false;
+    }
+};
+
+// Helper: Get proxied URL for Volcengine
+const getProxiedUrl = (url: string): string => {
+    if (isVolcengineUrl(url)) {
+        return `/api/studio/proxy?url=${encodeURIComponent(url)}`;
+    }
+    return url;
+};
 
 interface ImageCropperProps {
-  imageSrc: string;
+  imageSrc?: string;
+  videoSrc?: string; // 可选：传入视频源时，显示帧选择滑块
   onConfirm: (croppedBase64: string) => void;
   onCancel: () => void;
 }
@@ -28,12 +48,127 @@ interface CropRect {
     height: number;
 }
 
-export const ImageCropper: React.FC<ImageCropperProps> = ({ imageSrc, onConfirm, onCancel }) => {
+export const ImageCropper: React.FC<ImageCropperProps> = ({ imageSrc, videoSrc, onConfirm, onCancel }) => {
   const [crop, setCrop] = useState<CropRect | null>(null);
   const [aspectRatio, setAspectRatio] = useState<number | null>(null); // null means free
-  
+
+  // 视频帧选择状态
+  const [frameImage, setFrameImage] = useState<string | null>(imageSrc || null);
+  const [isSelectingFrame, setIsSelectingFrame] = useState(!!videoSrc && !imageSrc);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isVideoLoading, setIsVideoLoading] = useState(!!videoSrc);
+  const [videoBlobUrl, setVideoBlobUrl] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 加载视频（优先使用全局缓存，即 SecureVideo 已加载的视频）
+  useEffect(() => {
+    if (!videoSrc || !isSelectingFrame) return;
+
+    // 如果已经是 blob 或 data URL，直接使用
+    if (videoSrc.startsWith('data:') || videoSrc.startsWith('blob:')) {
+      setVideoBlobUrl(videoSrc);
+      setIsVideoLoading(false);
+      return;
+    }
+
+    // 检查全局缓存 - SecureVideo 加载的视频会存入这里
+    const cached = globalVideoBlobCache.get(videoSrc);
+    if (cached) {
+      console.log('[ImageCropper] 使用缓存的视频 blob:', videoSrc);
+      setVideoBlobUrl(cached);
+      setIsVideoLoading(false);
+      return;
+    }
+
+    // 缓存未命中，需要加载
+    console.log('[ImageCropper] 缓存未命中，开始加载视频:', videoSrc);
+    let active = true;
+    setIsVideoLoading(true);
+
+    const fetchUrl = getProxiedUrl(videoSrc);
+    fetch(fetchUrl)
+      .then(response => {
+        if (!response.ok) throw new Error("Video fetch failed");
+        return response.blob();
+      })
+      .then(blob => {
+        if (active) {
+          const mp4Blob = new Blob([blob], { type: 'video/mp4' });
+          const url = URL.createObjectURL(mp4Blob);
+          // 存入全局缓存
+          globalVideoBlobCache.set(videoSrc, url);
+          setVideoBlobUrl(url);
+          setIsVideoLoading(false);
+        }
+      })
+      .catch(err => {
+        console.error("Video load error:", err);
+        if (active) setIsVideoLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [videoSrc, isSelectingFrame]);
+
+  // 视频 ref callback - 在视频元素挂载时设置事件监听
+  const setVideoRef = (video: HTMLVideoElement | null) => {
+    if (video) {
+      (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = video;
+
+      const updateDuration = () => {
+        if (video.duration && Number.isFinite(video.duration)) {
+          setVideoDuration(video.duration);
+        }
+      };
+
+      video.addEventListener('loadedmetadata', updateDuration);
+      video.addEventListener('durationchange', updateDuration);
+      video.addEventListener('canplay', updateDuration);
+      video.addEventListener('loadeddata', updateDuration);
+
+      // 如果已经有 duration，直接设置
+      updateDuration();
+    }
+  };
+
+  // 滑块变化时更新视频时间
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.stopPropagation();
+    const time = parseFloat(e.target.value);
+    setCurrentTime(time);
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
+    }
+  };
+
+  // 从视频截取当前帧
+  const captureFrame = () => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.drawImage(video, 0, 0);
+      const frameBase64 = canvas.toDataURL('image/png');
+      setFrameImage(frameBase64);
+      setIsSelectingFrame(false);
+    }
+  };
+
+  // 格式化时间显示
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 100);
+    return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+  };
   
   // Interaction State
   const [interaction, setInteraction] = useState<{
@@ -260,24 +395,125 @@ export const ImageCropper: React.FC<ImageCropperProps> = ({ imageSrc, onConfirm,
   }, [aspectRatio]);
 
   const handleConfirm = () => {
-    if (!imgRef.current || !crop || crop.width === 0) { onConfirm(imageSrc); return; }
-    const canvas = document.createElement('canvas'); 
-    const sx = imgRef.current.naturalWidth / imgRef.current.width; 
+    const currentImage = frameImage;
+    if (!currentImage) { onCancel(); return; }
+    if (!imgRef.current || !crop || crop.width === 0) { onConfirm(currentImage); return; }
+    const canvas = document.createElement('canvas');
+    const sx = imgRef.current.naturalWidth / imgRef.current.width;
     const sy = imgRef.current.naturalHeight / imgRef.current.height;
-    
-    canvas.width = crop.width * sx; 
+
+    canvas.width = crop.width * sx;
     canvas.height = crop.height * sy;
-    
+
     const ctx = canvas.getContext('2d');
-    if (ctx) { 
-      ctx.drawImage(imgRef.current, crop.x * sx, crop.y * sy, crop.width * sx, crop.height * sy, 0, 0, crop.width * sx, crop.height * sy); 
-      onConfirm(canvas.toDataURL('image/png')); 
+    if (ctx) {
+      ctx.drawImage(imgRef.current, crop.x * sx, crop.y * sy, crop.width * sx, crop.height * sy, 0, 0, crop.width * sx, crop.height * sy);
+      onConfirm(canvas.toDataURL('image/png'));
     }
   };
 
+  // 视频帧选择界面
+  if (isSelectingFrame && videoSrc) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-white/95 backdrop-blur-xl flex flex-col items-center justify-center animate-in fade-in duration-300">
+        {/* Top Bar: Title */}
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+          <div className="bg-[#ffffff]/90 backdrop-blur-md px-6 py-2.5 rounded-full border border-slate-300 text-slate-600 text-xs font-medium flex items-center gap-2 shadow-2xl">
+            <Film size={14} className="text-green-500" />
+            <span>选择关键帧</span>
+          </div>
+          <span className="text-[10px] text-slate-500 font-medium">拖动滑块选择视频帧</span>
+        </div>
+
+        {/* Video Player */}
+        <div className="relative max-w-[85vw] max-h-[55vh] border border-slate-300 shadow-2xl rounded-lg overflow-hidden bg-black">
+          {(isVideoLoading || !videoBlobUrl) && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-10">
+              <Loader2 className="animate-spin text-white" size={32} />
+            </div>
+          )}
+          {videoBlobUrl && (
+            <video
+              ref={setVideoRef}
+              src={videoBlobUrl}
+              className="max-w-full max-h-[55vh] object-contain block"
+              muted
+              playsInline
+              preload="auto"
+            />
+          )}
+        </div>
+
+        {/* Frame Selector */}
+        <div className="flex flex-col items-center gap-4 mt-6 w-full max-w-2xl px-4">
+          {/* Time Display */}
+          <div className="flex items-center gap-4 text-sm font-mono">
+            <span className="text-green-500 font-bold">{formatTime(currentTime)}</span>
+            <span className="text-slate-400">/</span>
+            <span className="text-slate-500">{formatTime(videoDuration)}</span>
+          </div>
+
+          {/* Slider */}
+          <div className="w-full px-4" onMouseDown={(e) => e.stopPropagation()}>
+            <input
+              type="range"
+              min={0}
+              max={videoDuration || 1}
+              step={0.01}
+              value={currentTime}
+              onChange={handleSliderChange}
+              onInput={(e) => {
+                const time = parseFloat((e.target as HTMLInputElement).value);
+                setCurrentTime(time);
+                if (videoRef.current) {
+                  videoRef.current.currentTime = time;
+                }
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              disabled={!videoBlobUrl || videoDuration === 0}
+              className="w-full h-3 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ touchAction: 'none' }}
+            />
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-4 mt-4">
+            <button onClick={onCancel} className="px-6 py-2.5 rounded-full bg-slate-50 hover:bg-slate-100 text-slate-900 text-xs font-medium transition-colors border border-slate-200">
+              取消
+            </button>
+            <button
+              onClick={captureFrame}
+              disabled={isVideoLoading}
+              className={`px-8 py-2.5 rounded-full text-xs font-bold shadow-lg transition-all flex items-center gap-2 ${
+                isVideoLoading
+                  ? 'bg-slate-50 text-slate-500 cursor-not-allowed'
+                  : 'bg-green-500 hover:bg-green-400 text-black hover:scale-105 shadow-green-500/20'
+              }`}
+            >
+              <Check size={14} /> 选择此帧
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 没有图片时显示错误
+  if (!frameImage) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-white/95 backdrop-blur-xl flex flex-col items-center justify-center">
+        <span className="text-slate-500">无可用图片</span>
+        <button onClick={onCancel} className="mt-4 px-6 py-2 rounded-full bg-slate-100 text-slate-700 text-xs font-medium">
+          关闭
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-[200] bg-white/95 backdrop-blur-xl flex flex-col items-center justify-center animate-in fade-in duration-300">
-      
+
       {/* Top Bar: Title */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
         <div className="bg-[#ffffff]/90 backdrop-blur-md px-6 py-2.5 rounded-full border border-slate-300 text-slate-600 text-xs font-medium flex items-center gap-2 shadow-2xl">
@@ -288,29 +524,29 @@ export const ImageCropper: React.FC<ImageCropperProps> = ({ imageSrc, onConfirm,
       </div>
 
       {/* Main Canvas Area */}
-      <div 
-        ref={containerRef} 
-        className="relative max-w-[85vw] max-h-[65vh] border border-slate-300 shadow-2xl rounded-lg overflow-hidden select-none bg-white/80 group" 
+      <div
+        ref={containerRef}
+        className="relative max-w-[85vw] max-h-[65vh] border border-slate-300 shadow-2xl rounded-lg overflow-hidden select-none bg-white/80 group"
         style={{ cursor: 'crosshair' }}
-        onMouseDown={(e) => handleMouseDown(e, 'create')} 
+        onMouseDown={(e) => handleMouseDown(e, 'create')}
       >
-        <img ref={imgRef} src={imageSrc} className="max-w-full max-h-[65vh] object-contain block opacity-50" draggable={false} />
-        
+        <img ref={imgRef} src={frameImage} className="max-w-full max-h-[65vh] object-contain block opacity-50" draggable={false} />
+
         {/* Active Crop Area */}
         {crop && crop.width > 0 && (
             <div className="absolute" style={{ left: crop.x, top: crop.y, width: crop.width, height: crop.height }}>
                  {/* 1. Clear Image View Inside */}
                  <div className="absolute inset-0 overflow-hidden">
-                    <img 
-                        src={imageSrc} 
-                        className="absolute max-w-none" 
-                        style={{ 
-                            width: imgRef.current?.width, 
-                            height: imgRef.current?.height, 
-                            left: -crop.x, 
-                            top: -crop.y, 
-                            opacity: 1 
-                        }} 
+                    <img
+                        src={frameImage}
+                        className="absolute max-w-none"
+                        style={{
+                            width: imgRef.current?.width,
+                            height: imgRef.current?.height,
+                            left: -crop.x,
+                            top: -crop.y,
+                            opacity: 1
+                        }}
                     />
                  </div>
                  

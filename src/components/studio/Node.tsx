@@ -23,7 +23,7 @@ interface NodeProps {
     onAction: (id: string, prompt?: string) => void;
     onDelete: (id: string) => void;
     onExpand?: (data: { type: 'image' | 'video', src: string, rect: DOMRect, images?: string[], initialIndex?: number }) => void;
-    onCrop?: (id: string, imageBase64: string) => void;
+    onCrop?: (id: string, src: string, type?: 'image' | 'video') => void;
     onNodeMouseDown: (e: React.MouseEvent, id: string) => void;
     onPortMouseDown: (e: React.MouseEvent, id: string, type: 'input' | 'output') => void;
     onPortMouseUp: (e: React.MouseEvent, id: string, type: 'input' | 'output') => void;
@@ -134,6 +134,9 @@ const getProxiedUrl = (url: string): string => {
     return url;
 };
 
+// 全局视频 blob URL 缓存 - SecureVideo 加载后存入，ImageCropper 可直接使用
+export const globalVideoBlobCache = new Map<string, string>();
+
 const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMouseLeave, onClick, controls, videoRef, style }: any) => {
     const [blobUrl, setBlobUrl] = useState<string | null>(null);
     const [error, setError] = useState(false);
@@ -142,6 +145,13 @@ const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMo
         if (!src) return;
         if (src.startsWith('data:') || src.startsWith('blob:')) {
             setBlobUrl(src);
+            return;
+        }
+
+        // 检查全局缓存 - 避免重复加载
+        const cached = globalVideoBlobCache.get(src);
+        if (cached) {
+            setBlobUrl(cached);
             return;
         }
 
@@ -160,6 +170,8 @@ const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMo
                     // FORCE MIME TYPE TO VIDEO/MP4 to fix black screen issues with generic binary blobs
                     const mp4Blob = new Blob([blob], { type: 'video/mp4' });
                     const url = URL.createObjectURL(mp4Blob);
+                    // 存入全局缓存
+                    globalVideoBlobCache.set(src, url);
                     setBlobUrl(url);
                 }
             })
@@ -170,9 +182,7 @@ const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMo
 
         return () => {
             active = false;
-            if (blobUrl && !blobUrl.startsWith('data:')) {
-                URL.revokeObjectURL(blobUrl);
-            }
+            // 不再 revoke，因为已存入全局缓存供其他组件使用
         };
     }, [src]);
 
@@ -374,7 +384,6 @@ const NodeComponent: React.FC<NodeProps> = ({
 }) => {
     const isWorking = node.status === NodeStatus.WORKING;
     const mediaRef = useRef<HTMLImageElement | HTMLVideoElement | HTMLAudioElement | null>(null);
-    const upstreamVideoRef = useRef<HTMLVideoElement | null>(null); // 上游视频 ref（用于局部分镜截取）
     const playPromiseRef = useRef<Promise<void> | null>(null);
     const isHoveringRef = useRef(false);
     const [videoBlobUrl, setVideoBlobUrl] = useState<string | null>(null);
@@ -654,7 +663,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         }
         const ratio = node.data.aspectRatio || '16:9';
         const [w, h] = ratio.split(':').map(Number);
-        const extra = (node.type === NodeType.VIDEO_FACTORY && generationMode === 'CUT') ? 36 : 0;
+        const extra = 0; // 局部分镜按钮改为悬浮，不增加额外高度
         return ((node.width || DEFAULT_NODE_WIDTH) * h / w) + extra;
     };
     const nodeHeight = getNodeHeight();
@@ -795,8 +804,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                                 onMouseDown={(e) => e.stopPropagation()}
                             >
-                                <ImageIcon size={32} className="text-slate-300" />
-                                <span className="text-sm font-bold text-slate-500">上传图片</span>
+                                <ImageIcon size={32} className="text-blue-400/60" />
+                                <span className="text-sm font-bold text-blue-500">上传图片</span>
                             </div>
                             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
                         </div>
@@ -841,8 +850,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                                 onMouseDown={(e) => e.stopPropagation()}
                             >
-                                <VideoIcon size={32} className="text-slate-300" />
-                                <span className="text-sm font-bold text-slate-500">上传视频</span>
+                                <VideoIcon size={32} className="text-green-400/60" />
+                                <span className="text-sm font-bold text-green-500">上传视频</span>
                             </div>
                             <input type="file" ref={fileInputRef} className="hidden" accept="video/*" onChange={handleVideoUpload} />
                         </div>
@@ -874,7 +883,7 @@ const NodeComponent: React.FC<NodeProps> = ({
             return (
                 <div className="w-full h-full p-5 flex flex-col gap-3">
                     <div className="relative w-full h-32 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center cursor-pointer hover:bg-slate-200 transition-colors group/upload" onClick={() => !node.data.videoUri && fileInputRef.current?.click()}>
-                        {videoBlobUrl ? <video src={videoBlobUrl} className="w-full h-full object-cover opacity-80" muted onMouseEnter={safePlay} onMouseLeave={safePause} onClick={handleExpand} /> : <div className="flex flex-col items-center gap-2 text-slate-500 group-hover:upload:text-slate-600"><Upload size={20} /><span className="text-[10px] font-bold uppercase tracking-wider">上传视频</span></div>}
+                        {videoBlobUrl ? <video src={videoBlobUrl} className="w-full h-full object-cover opacity-80" muted onMouseEnter={safePlay} onMouseLeave={safePause} onClick={handleExpand} /> : <div className="flex flex-col items-center gap-2 text-green-500 group-hover:upload:text-green-600"><Upload size={20} /><span className="text-[10px] font-bold uppercase tracking-wider">上传视频</span></div>}
                         {node.data.videoUri && <button className="absolute top-2 right-2 p-1 bg-white/80 rounded-full text-slate-600 hover:text-slate-900 backdrop-blur-md" onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}><Edit size={10} /></button>}
                         <input type="file" ref={fileInputRef} className="hidden" accept="video/*" onChange={handleUploadVideo} />
                     </div>
@@ -936,11 +945,11 @@ const NodeComponent: React.FC<NodeProps> = ({
                     ) : (
                         <div className="flex flex-col items-center gap-2 z-10 select-none">
                             {isWorking ? (
-                                <Loader2 size={28} className="animate-spin text-pink-500" />
+                                <Loader2 size={28} className="animate-spin text-red-500" />
                             ) : (
                                 <>
-                                    {isMusic ? <Music size={28} className="text-slate-400" /> : <Mic2 size={28} className="text-slate-400" />}
-                                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">准备生成</span>
+                                    {isMusic ? <Music size={28} className="text-red-400/60" /> : <Mic2 size={28} className="text-red-400/60" />}
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-red-500">准备生成</span>
                                 </>
                             )}
                         </div>
@@ -957,108 +966,67 @@ const NodeComponent: React.FC<NodeProps> = ({
             )
         }
 
+        // VIDEO_FACTORY (CUT/CONTINUE模式): croppedFrame 不算作主内容，只在底部缩略图显示
         const hasContent = node.data.image || node.data.videoUri;
+
+        // CUT/CONTINUE 模式特殊处理：始终显示空状态样式，即使有 croppedFrame
+        const isCutOrContinueMode = node.type === NodeType.VIDEO_FACTORY && (generationMode === 'CUT' || generationMode === 'CONTINUE');
+        const showEmptyState = isCutOrContinueMode ? !hasContent : !hasContent;
+
         return (
             <div className="w-full h-full relative group/media overflow-hidden bg-white" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-                {!hasContent ? (
+                {showEmptyState ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-600">
-                        {node.type === NodeType.VIDEO_FACTORY && generationMode === 'CUT' ? (
-                            // 局部分镜模式：显示上游视频并提供截取功能
+                        {isCutOrContinueMode ? (
+                            // CUT/CONTINUE 模式：根据是否已选择关键帧显示不同状态
                             (() => {
                                 const upstreamVideo = inputAssets?.find(a => a.type === 'video');
-                                if (upstreamVideo) {
-                                    // 有上游视频：全屏显示并提供帧选择功能
-                                    // 步骤1: 拖动选择帧位置  步骤2: 点击底部按钮截取
-                                    const handleSeekStart = (e: React.MouseEvent) => {
-                                        e.stopPropagation();
-                                        e.preventDefault();
-                                        const container = e.currentTarget as HTMLElement;
-                                        const containerRect = container.getBoundingClientRect();
+                                const hasCroppedFrame = !!node.data.croppedFrame;
+                                const modeIcon = generationMode === 'CUT' ? <Scissors size={36} className="text-green-400/60" /> : <Film size={36} className="text-green-400/60" />;
+                                const modeLabel = generationMode === 'CUT' ? '局部分镜' : '剧情延展';
 
-                                        const seekToPosition = (clientX: number) => {
-                                            const vid = upstreamVideoRef.current;
-                                            if (!vid || !Number.isFinite(vid.duration)) return;
-                                            const per = Math.max(0, Math.min((clientX - containerRect.left) / containerRect.width, 1));
-                                            vid.currentTime = vid.duration * per;
-                                        };
-
-                                        // 初始定位
-                                        seekToPosition(e.clientX);
-
-                                        const handleMouseMove = (moveEvent: MouseEvent) => {
-                                            seekToPosition(moveEvent.clientX);
-                                        };
-
-                                        const handleMouseUp = () => {
-                                            // 释放时仅停止拖动，不截取
-                                            window.removeEventListener('mousemove', handleMouseMove);
-                                            window.removeEventListener('mouseup', handleMouseUp);
-                                        };
-
-                                        window.addEventListener('mousemove', handleMouseMove);
-                                        window.addEventListener('mouseup', handleMouseUp);
-                                    };
-
-                                    const handleCropClick = (e: React.MouseEvent) => {
-                                        e.stopPropagation();
-                                        const vid = upstreamVideoRef.current;
-                                        if (vid && vid.videoWidth > 0) {
-                                            const canvas = document.createElement('canvas');
-                                            canvas.width = vid.videoWidth;
-                                            canvas.height = vid.videoHeight;
-                                            const ctx = canvas.getContext('2d');
-                                            if (ctx) {
-                                                ctx.drawImage(vid, 0, 0);
-                                                onCrop?.(node.id, canvas.toDataURL('image/png'));
-                                            }
-                                        }
-                                    };
-
-                                    return (
-                                        <div className="absolute inset-0">
-                                            <SecureVideo
-                                                videoRef={upstreamVideoRef}
-                                                src={upstreamVideo.src}
-                                                className="w-full h-full object-cover bg-white pointer-events-none"
-                                                muted
-                                            />
-                                            {/* 交互层：拖动选择帧 */}
-                                            <div
-                                                className="absolute inset-x-0 top-0 bottom-9 cursor-ew-resize z-10"
-                                                onMouseDown={handleSeekStart}
-                                            />
-                                            {/* 底部截取按钮 */}
-                                            <div
-                                                className="absolute bottom-0 left-0 right-0 h-9 bg-slate-700/90 backdrop-blur-sm flex items-center justify-center z-20 cursor-pointer hover:bg-slate-600/90 transition-colors"
-                                                onClick={handleCropClick}
-                                                onMouseDown={(e) => e.stopPropagation()}
-                                            >
-                                                <span className="text-[10px] text-white font-medium tracking-wide">点击截取当前帧</span>
-                                            </div>
-                                        </div>
-                                    );
-                                }
-                                // 无上游视频：显示提示
                                 return (
                                     <>
-                                        {isWorking ? <Loader2 className="animate-spin text-green-500" size={36} /> : <Scissors size={36} className="text-green-400/60" />}
-                                        <span className="text-[11px] font-medium text-green-500">{isWorking ? "处理中..." : "连接上游视频节点"}</span>
+                                        {isWorking ? (
+                                            <Loader2 className="animate-spin text-green-500" size={36} />
+                                        ) : hasCroppedFrame ? (
+                                            <VideoIcon size={36} className="text-green-400/60" />
+                                        ) : (
+                                            modeIcon
+                                        )}
+                                        <span className="text-[11px] font-medium text-green-500">
+                                            {isWorking ? "生成中..." : (hasCroppedFrame ? "生成结果将在此处呈现" : (upstreamVideo ? "选择关键帧" : "连接上游视频节点"))}
+                                        </span>
+                                        {/* 悬浮按钮 - 选择/重新选择关键帧 */}
+                                        {upstreamVideo && !isWorking && (
+                                            <div
+                                                className="absolute bottom-3 left-1/2 -translate-x-1/2 px-4 py-2 bg-slate-700/90 backdrop-blur-sm rounded-full flex items-center justify-center cursor-pointer hover:bg-green-600 transition-all opacity-0 group-hover/media:opacity-100 hover:scale-105 shadow-lg"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onCrop?.(node.id, upstreamVideo.src, 'video');
+                                                }}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                            >
+                                                <Scissors size={12} className="text-white mr-1.5" />
+                                                <span className="text-[10px] text-white font-medium tracking-wide">{hasCroppedFrame ? "重新选择" : "选择关键帧"}</span>
+                                            </div>
+                                        )}
                                     </>
                                 );
                             })()
                         ) : (
-                            // 生成节点空状态：仅图标+提示文本
+                            // 普通生成节点空状态：仅图标+提示文本
                             <>
                                 {isWorking ? (
-                                    <Loader2 className="animate-spin text-blue-500" size={36} />
+                                    <Loader2 className={`animate-spin ${node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY ? 'text-green-500' : 'text-blue-500'}`} size={36} />
                                 ) : (
                                     node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY ? (
-                                        <VideoIcon size={36} className="text-slate-200" />
+                                        <VideoIcon size={36} className="text-green-400/60" />
                                     ) : (
-                                        <ImageIcon size={36} className="text-slate-200" />
+                                        <ImageIcon size={36} className="text-blue-400/60" />
                                     )
                                 )}
-                                <span className="text-[11px] font-medium text-slate-400">
+                                <span className={`text-[11px] font-medium ${node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY ? 'text-green-500' : 'text-blue-500'}`}>
                                     {isWorking ? "生成中..." : "生成结果将在此处呈现"}
                                 </span>
                             </>
@@ -1066,9 +1034,9 @@ const NodeComponent: React.FC<NodeProps> = ({
                     </div>
                 ) : (
                     <>
-                        {node.data.image ?
+                        {node.data.image ? (
                             <img ref={mediaRef as any} src={node.data.image} className="w-full h-full object-cover transition-transform duration-700 group-hover/media:scale-105 bg-white" draggable={false} style={{ filter: showImageGrid ? 'blur(10px)' : 'none' }} onContextMenu={(e) => onMediaContextMenu?.(e, node.id, 'image', node.data.image!)} />
-                            :
+                        ) : (
                             <SecureVideo
                                 videoRef={mediaRef} // Pass Ref to Video
                                 src={node.data.videoUri}
@@ -1079,7 +1047,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 onContextMenu={(e: React.MouseEvent) => onMediaContextMenu?.(e, node.id, 'video', node.data.videoUri!)}
                                 style={{ filter: showImageGrid ? 'blur(10px)' : 'none' }} // Pass Style
                             />
-                        }
+                        )}
                         {/* 组图数量徽章 - 右上角显示 */}
                         {node.data.images && node.data.images.length > 1 && !showImageGrid && (
                             <button
@@ -1092,8 +1060,6 @@ const NodeComponent: React.FC<NodeProps> = ({
                             </button>
                         )}
                         {node.status === NodeStatus.ERROR && <div className="absolute inset-0 bg-white/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20"><AlertCircle className="text-red-500 mb-2" /><span className="text-xs text-red-200">{node.data.error}</span></div>}
-                        {generationMode === 'CUT' && node.data.croppedFrame && <div className="absolute top-4 right-4 w-24 aspect-video bg-white/90 rounded-lg border border-purple-500/50 shadow-xl overflow-hidden z-20 hover:scale-150 transition-transform origin-top-right opacity-0 group-hover:opacity-100 transition-opacity duration-300"><img src={node.data.croppedFrame} className="w-full h-full object-cover" /></div>}
-                        {generationMode === 'CUT' && !node.data.croppedFrame && hasInputs && inputAssets?.some(a => a.src) && (<div className="absolute top-4 right-4 w-24 aspect-video bg-white/90 rounded-lg border border-purple-500/30 border-dashed shadow-xl overflow-hidden z-20 hover:scale-150 transition-transform origin-top-right flex flex-col items-center justify-center group/preview opacity-0 group-hover:opacity-100 transition-opacity duration-300"><div className="absolute inset-0 bg-purple-500/10 z-10"></div>{(() => { const asset = inputAssets!.find(a => a.src); if (asset?.type === 'video') { return <SecureVideo src={asset.src} className="w-full h-full object-cover opacity-60 bg-white" muted autoPlay />; } else { return <img src={asset?.src} className="w-full h-full object-cover opacity-60 bg-white" />; } })()}<span className="absolute z-20 text-[8px] font-bold text-purple-500 bg-white/90 px-1 rounded">分镜参考</span></div>)}
                     </>
                 )}
                 {node.type === NodeType.VIDEO_FACTORY && generationMode === 'CUT' && (videoBlobUrl || node.data.videoUri) &&
@@ -1151,87 +1117,32 @@ const NodeComponent: React.FC<NodeProps> = ({
             );
         }
 
-        // 结果节点：有生成结果的节点 → 显示提示词+模型信息+配置
-        // 继续编辑功能已迁移到右连接点
+        // 结果节点：显示提示词+模型信息（只读）
         const hasMediaResult = !!(node.data.image || node.data.videoUri);
-
         if (hasMediaResult && !isEditingResult) {
-            // 结果展示模式
             const promptText = node.data.prompt || '';
-            const handleCopyPrompt = () => {
-                navigator.clipboard.writeText(promptText);
-                setPromptCopied(true);
-                setTimeout(() => setPromptCopied(false), 1500);
-            };
+            const MODEL_LABELS: Record<string, string> = { 'doubao-seedream-4-5-251128': 'Seedream 4.5', 'nano-banana': 'Nano Banana', 'nano-banana-pro': 'Nano Pro', 'veo3.1': 'Veo 3.1', 'veo3.1-pro': 'Veo 3.1 Pro', 'doubao-seedance-1-5-pro-251215': 'Seedance 1.5' };
+            const modelName = MODEL_LABELS[node.data.model || ''] || node.data.model || '默认';
+            const tags = [node.data.aspectRatio, node.data.resolution].filter(Boolean);
 
-            // 进入编辑模式（不清除结果）
-            const handleEnterEditMode = () => {
-                setIsEditingResult(true);
-            };
-
-            // 模型名称映射
-            const MODEL_LABELS: Record<string, string> = {
-                'doubao-seedream-4-5-251128': 'Seedream 4.5',
-                'nano-banana': 'Nano Banana',
-                'nano-banana-pro': 'Nano Banana Pro',
-                'veo3.1': 'Veo 3.1',
-                'veo3.1-pro': 'Veo 3.1 Pro',
-                'veo3.1-components': 'Veo 3.1 多图参考',
-                'doubao-seedance-1-5-pro-251215': 'Seedance 1.5 Pro',
-            };
-            const modelName = node.data.model ? (MODEL_LABELS[node.data.model] || node.data.model) : '默认模型';
-
-            // 收集配置标签
-            const configTags: string[] = [];
-            if (node.data.aspectRatio) configTags.push(node.data.aspectRatio);
-            if (node.data.resolution) configTags.push(node.data.resolution);
+            const handleCopy = () => { navigator.clipboard.writeText(promptText); setPromptCopied(true); setTimeout(() => setPromptCopied(false), 1500); };
 
             return (
-                <div className={`absolute top-full left-1/2 -translate-x-1/2 w-[98%] pt-2 z-50 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}>
-                    <div className={`w-full rounded-[20px] p-1 ${GLASS_PANEL}`} onMouseDown={e => e.stopPropagation()}>
-                        <div className="relative bg-white rounded-[16px]">
-                            {/* 模型与配置信息栏 */}
-                            <div className="flex items-center gap-2 px-3 pt-2 pb-1 border-b border-slate-100">
-                                <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-md">
-                                    {modelName}
-                                </span>
-                                {configTags.map((tag, idx) => (
-                                    <span key={idx} className="text-[10px] font-medium text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">
-                                        {tag}
-                                    </span>
-                                ))}
-                            </div>
-                            {/* 提示词内容 */}
-                            <div className="p-3">
-                                <p className="text-xs text-slate-700 font-medium leading-relaxed line-clamp-4 break-words">
-                                    {promptText || <span className="text-slate-400 italic">无提示词</span>}
-                                </p>
-                            </div>
-                            {/* 底部操作栏 */}
-                            <div className="flex items-center justify-end gap-1 px-2 pb-2 pt-1 border-t border-slate-100">
+                <div className={`absolute top-full left-1/2 -translate-x-1/2 w-[98%] pt-2 z-50 transition-all duration-500 ${isOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'}`}>
+                    <div className={`rounded-[20px] p-1 ${GLASS_PANEL}`} onMouseDown={e => e.stopPropagation()}>
+                        <div className="bg-white rounded-[16px] p-3">
+                            {/* 模型+配置+复制 */}
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-md">{modelName}</span>
+                                {tags.map((t, i) => <span key={i} className="text-[10px] text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">{t}</span>)}
                                 {promptText && (
-                                    <button
-                                        onClick={handleCopyPrompt}
-                                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium transition-all duration-200 ${
-                                            promptCopied
-                                                ? 'bg-green-100 text-green-600'
-                                                : 'hover:bg-slate-100 text-slate-500 hover:text-slate-700'
-                                        }`}
-                                        title={promptCopied ? '已复制' : '复制提示词'}
-                                    >
+                                    <button onClick={handleCopy} className={`ml-auto p-1 rounded transition-colors ${promptCopied ? 'text-green-500' : 'text-slate-400 hover:text-slate-600'}`} title="复制">
                                         {promptCopied ? <Check size={12} /> : <Copy size={12} />}
-                                        <span>{promptCopied ? '已复制' : '复制'}</span>
                                     </button>
                                 )}
-                                <button
-                                    onClick={handleEnterEditMode}
-                                    className="flex items-center gap-1 px-3 py-1 rounded-lg text-[10px] font-bold bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-md hover:scale-105 active:scale-95 transition-all duration-200"
-                                    title="重新生成：进入编辑模式，可修改配置后重新生成"
-                                >
-                                    <RefreshCw size={12} />
-                                    <span>重新生成</span>
-                                </button>
                             </div>
+                            {/* 提示词 */}
+                            <p className="text-xs text-slate-600 leading-relaxed line-clamp-3">{promptText || <span className="text-slate-400 italic">无提示词</span>}</p>
                         </div>
                     </div>
                 </div>
@@ -1264,10 +1175,17 @@ const NodeComponent: React.FC<NodeProps> = ({
         const defaultModel = models[0];
         const currentModelLabel = models.find(m => m.v === node.data.model)?.l || defaultModel?.l || 'AI Model';
 
+        // CUT/CONTINUE 模式：底部缩略图显示 croppedFrame 而非上游视频
+        const isCutOrContinueMode = node.type === NodeType.VIDEO_FACTORY && (generationMode === 'CUT' || generationMode === 'CONTINUE');
+        const thumbnailAssets: InputAsset[] = isCutOrContinueMode && node.data.croppedFrame
+            ? [{ id: 'croppedFrame', type: 'image', src: node.data.croppedFrame }]
+            : (inputAssets || []);
+        const showThumbnails = isCutOrContinueMode ? !!node.data.croppedFrame : hasInputs;
+
         return (
             <div className={`absolute top-full left-1/2 -translate-x-1/2 w-[98%] pt-2 z-50 flex flex-col items-center justify-start transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? `opacity-100 translate-y-0 scale-100` : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}>
-                {/* InputThumbnails: Set strict Z-Index to lower layer */}
-                {hasInputs && onInputReorder && (<div className="w-full flex justify-center mb-2 z-0 relative"><InputThumbnails assets={inputAssets!} onReorder={(newOrder) => onInputReorder(node.id, newOrder)} /></div>)}
+                {/* InputThumbnails: CUT/CONTINUE显示croppedFrame，其他模式显示上游输入 */}
+                {showThumbnails && (<div className="w-full flex justify-center mb-2 z-0 relative"><InputThumbnails assets={thumbnailAssets} onReorder={isCutOrContinueMode ? () => {} : (newOrder) => onInputReorder?.(node.id, newOrder)} /></div>)}
                 {/* Glass Panel: Set strict Z-Index to higher layer to overlap thumbnails */}
                 <div className={`w-full rounded-[20px] p-1 flex flex-col gap-1 ${GLASS_PANEL} relative z-[100]`} onMouseDown={e => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
                     <div className="relative group/input bg-white rounded-[16px]">
