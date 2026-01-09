@@ -112,7 +112,7 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
             <button
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all ${
                     audioMode === 'voice'
-                        ? 'bg-white text-blue-500 shadow-sm'
+                        ? 'bg-white text-pink-500 shadow-sm'
                         : 'text-slate-500 hover:text-slate-700'
                 }`}
                 onClick={() => handleModeChange('voice')}
@@ -222,7 +222,7 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
             <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold text-slate-500 w-10 shrink-0">音色</span>
                 <div className="relative group/voice flex-1">
-                    <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 cursor-pointer hover:border-blue-300">
+                    <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 cursor-pointer hover:border-pink-300">
                         <span className="text-[11px] text-slate-700">
                             {VOICE_PRESETS.find(v => v.id === voiceConfig.voiceId)?.label || '选择音色'}
                         </span>
@@ -233,7 +233,7 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
                             <div
                                 key={voice.id}
                                 className={`px-3 py-2 cursor-pointer hover:bg-slate-50 ${
-                                    voiceConfig.voiceId === voice.id ? 'bg-blue-50 text-blue-600' : 'text-slate-600'
+                                    voiceConfig.voiceId === voice.id ? 'bg-pink-50 text-pink-600' : 'text-slate-600'
                                 }`}
                                 onClick={() => updateVoiceConfig({ voiceId: voice.id })}
                             >
@@ -255,8 +255,8 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
                                 key={emotion.value}
                                 className={`px-1.5 py-0.5 text-[9px] rounded border transition-all ${
                                     voiceConfig.emotion === emotion.value
-                                        ? 'bg-blue-50 border-blue-300 text-blue-600'
-                                        : 'bg-white border-slate-200 text-slate-500 hover:border-blue-200'
+                                        ? 'bg-pink-50 border-pink-300 text-pink-600'
+                                        : 'bg-white border-slate-200 text-slate-500 hover:border-pink-200'
                                 }`}
                                 onClick={() => updateVoiceConfig({ emotion: emotion.value })}
                                 title={emotion.desc}
@@ -275,7 +275,7 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
                         step="0.1"
                         value={voiceConfig.speed || 1}
                         onChange={(e) => updateVoiceConfig({ speed: parseFloat(e.target.value) })}
-                        className="flex-1 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                        className="flex-1 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-pink-500"
                     />
                     <span className="text-[9px] text-slate-600 w-6">{voiceConfig.speed || 1}x</span>
                 </div>
@@ -290,8 +290,8 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
                             key={effect.value}
                             className={`px-1.5 py-0.5 text-[9px] rounded border transition-all ${
                                 (voiceConfig.voiceModify?.soundEffect || '') === effect.value
-                                    ? 'bg-blue-50 border-blue-300 text-blue-600'
-                                    : 'bg-white border-slate-200 text-slate-500 hover:border-blue-200'
+                                    ? 'bg-pink-50 border-pink-300 text-pink-600'
+                                    : 'bg-white border-slate-200 text-slate-500 hover:border-pink-200'
                             }`}
                             onClick={() => updateVoiceConfig({
                                 voiceModify: { ...voiceConfig.voiceModify, soundEffect: effect.value as any }
@@ -364,14 +364,14 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
                         {/* 语音模式下的模型切换 */}
                         {audioMode === 'voice' && (
                             <div className="relative group/model">
-                                <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors text-[10px] text-slate-500 hover:text-blue-500">
+                                <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors text-[10px] text-slate-500 hover:text-pink-500">
                                     <span>切换模型</span>
                                     <ChevronDown size={10} />
                                 </div>
                                 <div className="absolute bottom-full left-0 pb-2 w-36 opacity-0 translate-y-2 pointer-events-none group-hover/model:opacity-100 group-hover/model:translate-y-0 group-hover/model:pointer-events-auto transition-all duration-200 z-[200]">
                                     <div className="bg-white border border-slate-300 rounded-xl shadow-xl overflow-hidden">
-                                        <div onClick={() => onUpdate(node.id, { model: 'speech-2.6-hd' })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.model === 'speech-2.6-hd' || !node.data.model ? 'text-blue-500 bg-blue-50' : 'text-slate-600'}`}>MiniMax HD</div>
-                                        <div onClick={() => onUpdate(node.id, { model: 'speech-2.6-turbo' })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.model === 'speech-2.6-turbo' ? 'text-blue-500 bg-blue-50' : 'text-slate-600'}`}>MiniMax Turbo</div>
+                                        <div onClick={() => onUpdate(node.id, { model: 'speech-2.6-hd' })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.model === 'speech-2.6-hd' || !node.data.model ? 'text-pink-500 bg-pink-50' : 'text-slate-600'}`}>MiniMax HD</div>
+                                        <div onClick={() => onUpdate(node.id, { model: 'speech-2.6-turbo' })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 ${node.data.model === 'speech-2.6-turbo' ? 'text-pink-500 bg-pink-50' : 'text-slate-600'}`}>MiniMax Turbo</div>
                                     </div>
                                 </div>
                             </div>
@@ -385,9 +385,7 @@ export const AudioNodePanel: React.FC<AudioNodePanelProps> = ({
                         className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${
                             isWorking
                                 ? 'bg-slate-50 text-slate-500 cursor-not-allowed'
-                                : audioMode === 'music'
-                                    ? 'bg-gradient-to-r from-pink-500 to-rose-500 text-white hover:shadow-lg hover:shadow-pink-500/20 hover:scale-105 active:scale-95'
-                                    : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'
+                                : 'bg-gradient-to-r from-pink-500 to-rose-500 text-white hover:shadow-lg hover:shadow-pink-500/20 hover:scale-105 active:scale-95'
                         }`}
                     >
                         {isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}

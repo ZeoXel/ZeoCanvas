@@ -44,7 +44,9 @@ interface SidebarDockProps {
 // Helper Helpers
 const getNodeNameCN = (t: string) => {
     switch(t) {
-        case NodeType.PROMPT_INPUT: return '创意描述';
+        case NodeType.PROMPT_INPUT: return '提示词';
+        case NodeType.IMAGE_ASSET: return '插入图片';
+        case NodeType.VIDEO_ASSET: return '插入视频';
         case NodeType.IMAGE_GENERATOR: return '图片生成';
         case NodeType.VIDEO_GENERATOR: return '视频生成';
         case NodeType.VIDEO_FACTORY: return '视频工厂';
@@ -58,6 +60,8 @@ const getNodeNameCN = (t: string) => {
 const getNodeIcon = (t: string) => {
     switch(t) {
         case NodeType.PROMPT_INPUT: return Type;
+        case NodeType.IMAGE_ASSET: return ImageIcon;
+        case NodeType.VIDEO_ASSET: return VideoIcon;
         case NodeType.IMAGE_GENERATOR: return ImageIcon;
         case NodeType.VIDEO_GENERATOR: return Film;
         case NodeType.VIDEO_FACTORY: return Clapperboard;
@@ -75,7 +79,9 @@ const EASE_OUT = "cubic-bezier(0.16, 1, 0.3, 1)";
 // 节点类型对应的颜色
 const getNodeColor = (type: string) => {
     switch(type) {
-        case NodeType.PROMPT_INPUT: return '#94a3b8'; // slate
+        case NodeType.PROMPT_INPUT: return '#fbbf24'; // amber (文本-黄色)
+        case NodeType.IMAGE_ASSET: return '#60a5fa'; // blue (图片-蓝色)
+        case NodeType.VIDEO_ASSET: return '#4ade80'; // green (视频-绿色)
         case NodeType.IMAGE_GENERATOR: return '#60a5fa'; // blue
         case NodeType.VIDEO_GENERATOR: return '#a78bfa'; // violet
         case NodeType.VIDEO_FACTORY: return '#f472b6'; // pink
@@ -549,7 +555,7 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
                     </span>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 custom-scrollbar space-y-2">
-                    {[NodeType.PROMPT_INPUT, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.VIDEO_ANALYZER, NodeType.IMAGE_EDITOR].map(t => {
+                    {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.VIDEO_ANALYZER, NodeType.IMAGE_EDITOR].map(t => {
                         const ItemIcon = getNodeIcon(t);
                         return (
                             <button

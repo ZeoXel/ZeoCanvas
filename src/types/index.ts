@@ -1,6 +1,8 @@
 
 export enum NodeType {
   PROMPT_INPUT = 'PROMPT_INPUT',
+  IMAGE_ASSET = 'IMAGE_ASSET', // 图片素材节点：上传图片素材，传递给下游节点
+  VIDEO_ASSET = 'VIDEO_ASSET', // 视频素材节点：上传视频素材，传递给下游节点
   IMAGE_GENERATOR = 'IMAGE_GENERATOR',
   VIDEO_GENERATOR = 'VIDEO_GENERATOR',
   VIDEO_FACTORY = 'VIDEO_FACTORY', // 视频工厂：展示和编辑视频结果

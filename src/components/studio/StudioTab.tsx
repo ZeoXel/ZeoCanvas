@@ -406,9 +406,11 @@ export default function StudioTab() {
   const getApproxNodeHeight = (node: AppNode) => {
       if (node.height) return node.height;
       const width = node.width || 420;
-      if (['PROMPT_INPUT', 'VIDEO_ANALYZER', 'IMAGE_EDITOR'].includes(node.type)) return 360;
-      if (node.type === NodeType.AUDIO_GENERATOR) return 200;
-      const [w, h] = (node.data.aspectRatio || '1:1').split(':').map(Number);
+      if (['VIDEO_ANALYZER', 'IMAGE_EDITOR'].includes(node.type)) return 360;
+      if (node.type === NodeType.AUDIO_GENERATOR) return Math.round(width * 9 / 16); // 16:9 比例
+      // 提示词节点和素材节点默认 16:9 比例
+      const defaultRatio = (node.type === NodeType.PROMPT_INPUT || node.type === NodeType.IMAGE_ASSET || node.type === NodeType.VIDEO_ASSET) ? '16:9' : '1:1';
+      const [w, h] = (node.data.aspectRatio || defaultRatio).split(':').map(Number);
       const extra = (node.type === NodeType.VIDEO_GENERATOR && node.data.generationMode === 'CUT') ? 36 : 0;
       return ((width * h / w) + extra);
   };
@@ -454,7 +456,9 @@ export default function StudioTab() {
 
   const getNodeNameCN = (t: string) => {
       switch(t) {
-          case NodeType.PROMPT_INPUT: return '创意描述';
+          case NodeType.PROMPT_INPUT: return '提示词';
+          case NodeType.IMAGE_ASSET: return '插入图片';
+          case NodeType.VIDEO_ASSET: return '插入视频';
           case NodeType.IMAGE_GENERATOR: return '图片生成';
           case NodeType.VIDEO_GENERATOR: return '视频生成';
           case NodeType.VIDEO_FACTORY: return '视频工厂';
@@ -467,6 +471,8 @@ export default function StudioTab() {
   const getNodeIcon = (t: string) => {
       switch(t) {
           case NodeType.PROMPT_INPUT: return Type;
+          case NodeType.IMAGE_ASSET: return ImageIcon;
+          case NodeType.VIDEO_ASSET: return VideoIcon;
           case NodeType.IMAGE_GENERATOR: return ImageIcon;
           case NodeType.VIDEO_GENERATOR: return Film;
           case NodeType.VIDEO_FACTORY: return VideoIcon;
@@ -566,7 +572,9 @@ export default function StudioTab() {
       };
       
       const typeMap: Record<string, string> = {
-          [NodeType.PROMPT_INPUT]: '创意描述',
+          [NodeType.PROMPT_INPUT]: '提示词',
+          [NodeType.IMAGE_ASSET]: '插入图片',
+          [NodeType.VIDEO_ASSET]: '插入视频',
           [NodeType.IMAGE_GENERATOR]: '图片生成',
           [NodeType.VIDEO_GENERATOR]: '视频生成',
           [NodeType.VIDEO_FACTORY]: '视频工厂',
@@ -583,8 +591,9 @@ export default function StudioTab() {
       // 计算节点预估高度并找到不重叠的位置
       const nodeWidth = 420;
       const [rw, rh] = (defaults.aspectRatio || '1:1').split(':').map(Number);
-      const nodeHeight = type === NodeType.PROMPT_INPUT || type === NodeType.VIDEO_ANALYZER ? 360 :
-                         type === NodeType.AUDIO_GENERATOR ? 200 :
+      const nodeHeight = type === NodeType.VIDEO_ANALYZER ? 360 :
+                         type === NodeType.AUDIO_GENERATOR ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
+                         type === NodeType.PROMPT_INPUT ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
                          (nodeWidth * rh / rw);
 
       const { x: finalX, y: finalY } = findNonOverlappingPosition(safeBaseX, safeBaseY, nodeWidth, nodeHeight, nodesRef.current, 'down');
@@ -852,12 +861,17 @@ export default function StudioTab() {
               canvasX = clientX - rect.left;
               canvasY = clientY - rect.top;
           }
-          // Always update mousePos for connection preview (using canvas-relative coords)
-          setMousePos({ x: canvasX, y: canvasY });
+
+          // 拖拽节点时跳过不必要的状态更新
+          const isDraggingNode = !!(draggingNodeId && dragNodeRef.current);
+
+          // 只在连接线预览时更新 mousePos（拖拽节点时不需要）
+          if (connectionStartRef.current && !isDraggingNode) {
+              setMousePos({ x: canvasX, y: canvasY });
+          }
 
           if (selectionRect) {
               setSelectionRect((prev:any) => prev ? ({ ...prev, currentX: canvasX, currentY: canvasY }) : null);
-              // Don't return - allow mousePos update for connection preview
               if (!connectionStartRef.current) return;
           }
 
@@ -866,23 +880,23 @@ export default function StudioTab() {
               const dx = (clientX - mouseStartX) / scale;
               const dy = (clientY - mouseStartY) / scale;
               setGroups(prev => prev.map(g => g.id === id ? { ...g, x: startX + dx, y: startY + dy } : g));
-              if (childNodes.length > 0) { 
-                  setNodes(prev => prev.map(n => { 
-                      const child = childNodes.find(c => c.id === n.id); 
-                      return child ? { ...n, x: child.startX + dx, y: child.startY + dy } : n; 
-                  })); 
-              } 
+              if (childNodes.length > 0) {
+                  setNodes(prev => prev.map(n => {
+                      const child = childNodes.find(c => c.id === n.id);
+                      return child ? { ...n, x: child.startX + dx, y: child.startY + dy } : n;
+                  }));
+              }
               return;
           }
 
-          if (isDraggingCanvas) { 
-              const dx = clientX - lastMousePos.x; 
-              const dy = clientY - lastMousePos.y; 
-              setPan(p => ({ x: p.x + dx, y: p.y + dy })); 
-              setLastMousePos({ x: clientX, y: clientY }); 
+          if (isDraggingCanvas) {
+              const dx = clientX - lastMousePos.x;
+              const dy = clientY - lastMousePos.y;
+              setPan(p => ({ x: p.x + dx, y: p.y + dy }));
+              setLastMousePos({ x: clientX, y: clientY });
           }
-          
-          if (draggingNodeId && dragNodeRef.current && dragNodeRef.current.id === draggingNodeId) {
+
+          if (isDraggingNode && dragNodeRef.current && dragNodeRef.current.id === draggingNodeId) {
              const { startX, startY, mouseStartX, mouseStartY, nodeWidth, nodeHeight, otherSelectedNodes } = dragNodeRef.current;
              let dx = (clientX - mouseStartX) / scale;
              let dy = (clientY - mouseStartY) / scale;
@@ -892,14 +906,20 @@ export default function StudioTab() {
              // 获取所有正在拖动的节点 ID（主节点 + 其他选中节点）
              const draggingIds = new Set([draggingNodeId, ...(otherSelectedNodes?.map(n => n.id) || [])]);
 
-             // Snap Logic（只对非拖动中的节点进行吸附检测）
+             // Snap Logic（只对非拖动中的节点进行吸附检测，限制遍历数量）
              const SNAP = SNAP_THRESHOLD / scale;
              const myL = proposedX; const myC = proposedX + nodeWidth / 2; const myR = proposedX + nodeWidth;
              const myT = proposedY; const myM = proposedY + nodeHeight / 2; const myB = proposedY + nodeHeight;
              let snappedX = false; let snappedY = false;
 
-             nodesRef.current.forEach(other => {
-                 if (draggingIds.has(other.id)) return; // 跳过所有正在拖动的节点
+             // 只检查附近的节点（性能优化）
+             const nearbyRange = 500;
+             for (const other of nodesRef.current) {
+                 if (draggingIds.has(other.id)) continue;
+                 // 快速距离检查，跳过太远的节点
+                 if (Math.abs(other.x - proposedX) > nearbyRange && Math.abs(other.y - proposedY) > nearbyRange) continue;
+                 if (snappedX && snappedY) break;
+
                  const otherBounds = getNodeBounds(other);
                  if (!snappedX) {
                      if (Math.abs(myL - otherBounds.x) < SNAP) { proposedX = otherBounds.x; snappedX = true; }
@@ -915,18 +935,17 @@ export default function StudioTab() {
                      else if (Math.abs(myB - otherBounds.b) < SNAP) { proposedY = otherBounds.b - nodeHeight; snappedY = true; }
                      else if (Math.abs(myM - (otherBounds.y+otherBounds.height/2)) < SNAP) { proposedY = (otherBounds.y+otherBounds.height/2) - nodeHeight/2; snappedY = true; }
                  }
-             });
+             }
 
              // 计算实际位移（考虑吸附后的调整）
              const actualDx = proposedX - startX;
              const actualDy = proposedY - startY;
 
-             // 同时移动主节点和其他选中节点
+             // 直接更新节点位置
              setNodes(prev => prev.map(n => {
                  if (n.id === draggingNodeId) {
                      return { ...n, x: proposedX, y: proposedY };
                  }
-                 // 移动其他选中的节点
                  const otherNode = otherSelectedNodes?.find(on => on.id === n.id);
                  if (otherNode) {
                      return { ...n, x: otherNode.startX + actualDx, y: otherNode.startY + actualDy };
@@ -980,61 +999,7 @@ export default function StudioTab() {
           setSelectionRect(null);
       }
       
-      // Collision logic for dropped node
-      if (draggingNodeId) {
-          const draggedNode = nodesRef.current.find(n => n.id === draggingNodeId);
-          if (draggedNode) {
-              const myBounds = getNodeBounds(draggedNode);
-              const otherNodes = nodesRef.current.filter(n => n.id !== draggingNodeId);
-              
-              // Simple Iterative Solver for Collision
-              // We check against all nodes. If we collide, we move out the shortest distance.
-              // To handle multiple collisions, a physics engine iterates this, but for UI, one pass usually suffices 
-              // or we check the 'closest' collision. Here we iterate all to clear overlaps.
-              
-              for (const other of otherNodes) {
-                  const otherBounds = getNodeBounds(other);
-                  
-                  // AABB Collision Check
-                  const isOverlapping = (
-                      myBounds.x < otherBounds.r && 
-                      myBounds.r > otherBounds.x &&
-                      myBounds.y < otherBounds.b && 
-                      myBounds.b > otherBounds.y
-                  );
-
-                  if (isOverlapping) {
-                       // Calculate overlap amounts on all 4 sides
-                       const overlapLeft = myBounds.r - otherBounds.x;
-                       const overlapRight = otherBounds.r - myBounds.x;
-                       const overlapTop = myBounds.b - otherBounds.y;
-                       const overlapBottom = otherBounds.b - myBounds.y;
-
-                       // Find the smallest overlap (shortest path to separate)
-                       const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
-
-                       if (minOverlap === overlapLeft) {
-                           draggedNode.x = otherBounds.x - myBounds.width - COLLISION_PADDING;
-                       } else if (minOverlap === overlapRight) {
-                           draggedNode.x = otherBounds.r + COLLISION_PADDING;
-                       } else if (minOverlap === overlapTop) {
-                           draggedNode.y = otherBounds.y - myBounds.height - COLLISION_PADDING;
-                       } else if (minOverlap === overlapBottom) {
-                           draggedNode.y = otherBounds.b + COLLISION_PADDING;
-                       }
-
-                       // Update temporary bounds for next iteration in loop
-                       myBounds.x = draggedNode.x;
-                       myBounds.y = draggedNode.y;
-                       myBounds.r = draggedNode.x + myBounds.width;
-                       myBounds.b = draggedNode.y + myBounds.height;
-                  }
-              }
-
-              // Update State
-              setNodes(prev => prev.map(n => n.id === draggingNodeId ? { ...n, x: draggedNode.x, y: draggedNode.y } : n));
-          }
-      }
+      // 拖拽结束后无需额外处理，位置已在 mouseMove 中更新
 
       if (draggingNodeId || resizingNodeId || dragGroupRef.current) saveHistory();
 
@@ -1049,6 +1014,23 @@ export default function StudioTab() {
               const canvasY = (e.clientY - pan.y) / scale;
               setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: connStart.id });
               setContextMenuTarget({ type: 'output-action', sourceNodeId: connStart.id, canvasX, canvasY });
+          }
+      }
+
+      // 检查是否从生成节点的输入端口开始拖拽并释放到空白区域
+      // 如果是，弹出上游节点选择框（素材/描述）
+      if (connStart && connStart.portType === 'input') {
+          const targetNode = nodesRef.current.find(n => n.id === connStart.id);
+          // 仅对生成节点（图像/视频）生效
+          if (targetNode && (
+              targetNode.type === NodeType.IMAGE_GENERATOR ||
+              targetNode.type === NodeType.VIDEO_GENERATOR ||
+              targetNode.type === NodeType.VIDEO_FACTORY
+          )) {
+              const canvasX = (e.clientX - pan.x) / scale;
+              const canvasY = (e.clientY - pan.y) / scale;
+              setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: connStart.id });
+              setContextMenuTarget({ type: 'input-action', targetNodeId: connStart.id, canvasX, canvasY });
           }
       }
 
@@ -2015,7 +1997,8 @@ export default function StudioTab() {
                       const f = nodes.find(n => n.id === conn.from), t = nodes.find(n => n.id === conn.to);
                       if (!f || !t) return null;
                       const fHeight = f.height || getApproxNodeHeight(f); const tHeight = t.height || getApproxNodeHeight(t);
-                      const fx = f.x + (f.width||420) + 3; let fy = f.y + fHeight/2; const tx = t.x - 3; let ty = t.y + tHeight/2;
+                      const fx = f.x + (f.width||420) + 3; let fy = f.y + fHeight/2;
+                      const tx = t.x - 3; let ty = t.y + tHeight/2;
                       if (Math.abs(fy - ty) < 0.5) ty += 0.5;
                       if (isNaN(fx) || isNaN(fy) || isNaN(tx) || isNaN(ty)) return null;
                       const d = `M ${fx} ${fy} C ${fx + (tx-fx)*0.5} ${fy} ${tx - (tx-fx)*0.5} ${ty} ${tx} ${ty}`;
@@ -2212,6 +2195,13 @@ export default function StudioTab() {
                       setContextMenu({ visible: true, x: position.x, y: position.y, id: nodeId });
                       setContextMenuTarget({ type: 'output-action', sourceNodeId: nodeId, canvasX, canvasY });
                   }}
+                  onInputPortAction={(nodeId, position) => {
+                      // 双击左连接点时，弹出上游节点选择框（素材/描述）
+                      const canvasX = (position.x - pan.x) / scale;
+                      const canvasY = (position.y - pan.y) / scale;
+                      setContextMenu({ visible: true, x: position.x, y: position.y, id: nodeId });
+                      setContextMenuTarget({ type: 'input-action', targetNodeId: nodeId, canvasX, canvasY });
+                  }}
                   onResizeMouseDown={(e, id, w, h) => {
                       e.stopPropagation(); e.preventDefault(); // 防止拖拽选中文本
                       const n = nodes.find(x => x.id === id);
@@ -2230,7 +2220,7 @@ export default function StudioTab() {
                   isSelected={selectedNodeIds.includes(node.id)} 
                   inputAssets={node.inputs.map(i => nodes.find(n => n.id === i)).filter(n => n && (n.data.image || n.data.videoUri || n.data.croppedFrame)).slice(0, 6).map(n => ({ id: n!.id, type: (n!.data.croppedFrame || n!.data.image) ? 'image' : 'video', src: n!.data.croppedFrame || n!.data.image || n!.data.videoUri! }))}
                   onInputReorder={(nodeId, newOrder) => { const node = nodes.find(n => n.id === nodeId); if (node) { setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, inputs: newOrder } : n)); } }}
-                  isDragging={draggingNodeId === node.id} isResizing={resizingNodeId === node.id} isConnecting={!!connectionStart} isGroupDragging={activeGroupNodeIds.includes(node.id)}
+                  isDragging={draggingNodeId === node.id || (!!draggingNodeId && selectedNodeIds.includes(node.id))} isResizing={resizingNodeId === node.id} isConnecting={!!connectionStart} isGroupDragging={activeGroupNodeIds.includes(node.id)}
               />
               ))}
 
@@ -2284,7 +2274,7 @@ export default function StudioTab() {
                   {contextMenuTarget?.type === 'create' && (
                       <>
                           <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">创建新节点</div>
-                          {[NodeType.PROMPT_INPUT, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.VIDEO_ANALYZER, NodeType.IMAGE_EDITOR].map(t => { const ItemIcon = getNodeIcon(t); return ( <button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x-pan.x)/scale, (contextMenu.y-pan.y)/scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600" /> {getNodeNameCN(t)} </button> ); })}
+                          {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.VIDEO_ANALYZER, NodeType.IMAGE_EDITOR].map(t => { const ItemIcon = getNodeIcon(t); return ( <button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x-pan.x)/scale, (contextMenu.y-pan.y)/scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600" /> {getNodeNameCN(t)} </button> ); })}
                       </>
                   )}
                   {contextMenuTarget?.type === 'group' && (
@@ -2308,7 +2298,7 @@ export default function StudioTab() {
                       let availableTypes: { type: NodeType, label: string, icon: any, color: string, generationMode?: VideoGenerationMode }[] = [];
                       if (hasImage) {
                           availableTypes = [
-                              { type: NodeType.IMAGE_GENERATOR, label: '继续编辑图片', icon: ImageIcon, color: 'text-blue-500' },
+                              { type: NodeType.IMAGE_GENERATOR, label: '编辑图片', icon: ImageIcon, color: 'text-blue-500' },
                               { type: NodeType.VIDEO_GENERATOR, label: '生成视频', icon: Film, color: 'text-purple-500' },
                           ];
                       } else if (hasVideo) {
@@ -2396,6 +2386,79 @@ export default function StudioTab() {
                                       <Icon size={12} className={color} /> {label}
                                   </button>
                               ))}
+                          </>
+                      );
+                  })()}
+                  {contextMenuTarget?.type === 'input-action' && (() => {
+                      // 左连接点双击：创建上游输入节点（素材或描述）
+                      const targetNode = nodes.find(n => n.id === contextMenuTarget.targetNodeId);
+                      if (!targetNode) return null;
+
+                      const handleCreateUpstreamNode = (type: NodeType) => {
+                          saveHistory();
+                          const newNodeWidth = 420;
+                          // 计算新节点高度：文本360，素材16:9(236)
+                          const newNodeHeight = type === NodeType.PROMPT_INPUT ? 360 :
+                                                (type === NodeType.IMAGE_ASSET || type === NodeType.VIDEO_ASSET) ? Math.round(420 * 9 / 16) : 320;
+
+                          // 获取目标节点的实际高度
+                          const targetHeight = targetNode.height || getApproxNodeHeight(targetNode);
+
+                          // 新节点放在目标节点左侧，保持合理间距
+                          const gap = 60; // 节点之间的间距
+                          const newX = targetNode.x - gap - newNodeWidth;
+                          // 新节点中心对齐目标节点中心
+                          const newY = targetNode.y + targetHeight / 2 - newNodeHeight / 2;
+
+                          // 获取节点标题
+                          const getTitle = () => {
+                              if (type === NodeType.PROMPT_INPUT) return '文本';
+                              if (type === NodeType.IMAGE_ASSET) return '图片';
+                              if (type === NodeType.VIDEO_ASSET) return '视频';
+                              return '节点';
+                          };
+
+                          const newNodeId = `n-${Date.now()}-${Math.floor(Math.random()*1000)}`;
+                          const newNode: AppNode = {
+                              id: newNodeId,
+                              type,
+                              x: newX,
+                              y: newY,
+                              title: getTitle(),
+                              status: NodeStatus.IDLE,
+                              data: {},
+                              inputs: []
+                          };
+
+                          setNodes(prev => [...prev, newNode]);
+                          // 自动连接：新节点 → 目标节点
+                          setConnections(prev => [...prev, { from: newNodeId, to: targetNode.id }]);
+                          setContextMenu(null);
+                      };
+
+                      return (
+                          <>
+                              <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-teal-600">
+                                  添加输入节点
+                              </div>
+                              <button
+                                  className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-amber-50 rounded-lg flex items-center gap-2.5 transition-colors"
+                                  onClick={() => handleCreateUpstreamNode(NodeType.PROMPT_INPUT)}
+                              >
+                                  <Type size={12} className="text-amber-500" /> 文本
+                              </button>
+                              <button
+                                  className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-blue-50 rounded-lg flex items-center gap-2.5 transition-colors"
+                                  onClick={() => handleCreateUpstreamNode(NodeType.IMAGE_ASSET)}
+                              >
+                                  <ImageIcon size={12} className="text-blue-500" /> 图片
+                              </button>
+                              <button
+                                  className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-green-50 rounded-lg flex items-center gap-2.5 transition-colors"
+                                  onClick={() => handleCreateUpstreamNode(NodeType.VIDEO_ASSET)}
+                              >
+                                  <VideoIcon size={12} className="text-green-500" /> 视频
+                              </button>
                           </>
                       );
                   })()}
