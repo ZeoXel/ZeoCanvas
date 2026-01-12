@@ -41,42 +41,47 @@ export const processDefaultVideoGen = async (
 };
 
 // --- Module: StoryContinuator (剧情延展) ---
+// 支持可选关键帧：用户选取的帧 > 裁剪帧 > 视频最后一帧
 export const processStoryContinuator = async (
-    node: AppNode, 
-    inputs: AppNode[], 
+    node: AppNode,
+    inputs: AppNode[],
     prompt: string
 ): Promise<StrategyResult> => {
-    let inputImages: string[] = [];
+    let inputImageForGeneration: string | null = null;
 
-    // 1. Check for Upstream Video (for Metadata)
-    // CRITICAL FIX: For Story Continuation, we strictly want "Image-to-Video" behavior
-    // where the image is the LAST FRAME of the previous video.
-    // We do NOT want to pass the raw video bytes as `videoInput` because that triggers
-    // Veo's "Video Editing" or "Masking" mode, which is not what we want for linear story extension.
-    
-    const videoNode = inputs.find(n => n.data.videoUri || n.data.videoMetadata);
-    
-    if (videoNode && videoNode.data.videoUri) {
-         try {
-             let videoSrc = videoNode.data.videoUri;
-             // Ensure we have a base64 source for frame extraction (canvas needs it, or cross-origin blob)
-             if (videoSrc.startsWith('http')) {
-                 videoSrc = await urlToBase64(videoSrc); 
-             }
-             // Extract the very last frame
-             const lastFrame = await extractLastFrame(videoSrc);
-             if (lastFrame) {
-                 inputImages = [lastFrame];
-             }
-         } catch (e) {
-             console.warn("StoryContinuator: Frame extraction failed", e);
-         }
+    // 优先级1: 使用用户选取/裁剪的关键帧（如果有）
+    if (node.data.croppedFrame) {
+        inputImageForGeneration = node.data.croppedFrame;
+    } else if (node.data.selectedFrame) {
+        inputImageForGeneration = node.data.selectedFrame;
+    }
+
+    // 优先级2: 如果没有选取关键帧，从上游视频提取最后一帧
+    if (!inputImageForGeneration) {
+        const videoNode = inputs.find(n => n.data.videoUri || n.data.videoMetadata);
+
+        if (videoNode && videoNode.data.videoUri) {
+            try {
+                let videoSrc = videoNode.data.videoUri;
+                // Ensure we have a base64 source for frame extraction
+                if (videoSrc.startsWith('http')) {
+                    videoSrc = await urlToBase64(videoSrc);
+                }
+                // Extract the very last frame as default
+                const lastFrame = await extractLastFrame(videoSrc);
+                if (lastFrame) {
+                    inputImageForGeneration = lastFrame;
+                }
+            } catch (e) {
+                console.warn("StoryContinuator: Frame extraction failed", e);
+            }
+        }
     }
 
     return {
         finalPrompt: prompt,
         videoInput: null, // FORCE NULL to ensure Image-to-Video mode
-        inputImageForGeneration: inputImages.length > 0 ? inputImages[0] : null,
+        inputImageForGeneration,
         referenceImages: undefined,
         generationMode: 'CONTINUE'
     };
@@ -257,8 +262,8 @@ export const processCharacterRef = async (
 
 // --- Main Factory ---
 export const getGenerationStrategy = async (
-    node: AppNode, 
-    inputs: AppNode[], 
+    node: AppNode,
+    inputs: AppNode[],
     basePrompt: string
 ): Promise<StrategyResult> => {
     const mode = node.data.generationMode || 'DEFAULT';
@@ -269,7 +274,8 @@ export const getGenerationStrategy = async (
         case 'FIRST_LAST_FRAME':
             return processFrameWeaver(node, inputs, basePrompt);
         case 'CUT':
-            return processSceneDirector(node, inputs, basePrompt);
+            // CUT 模式已合并到 CONTINUE，向后兼容
+            return processStoryContinuator(node, inputs, basePrompt);
         case 'CONTINUE':
             return processStoryContinuator(node, inputs, basePrompt);
         case 'DEFAULT':

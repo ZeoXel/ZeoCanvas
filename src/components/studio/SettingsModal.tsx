@@ -69,7 +69,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               />
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              用于激活 <strong className="text-slate-700 dark:text-slate-200">Wan 2.1 / Wan 2.5</strong> 视频生成模型。密钥仅保存在您的浏览器本地存储中，不会上传至 ls-studio 服务器。
+              用于激活 <strong className="text-slate-700 dark:text-slate-200">Wan 2.1 / Wan 2.5</strong> 视频生成模型。密钥仅保存在您的浏览器本地存储中，不会上传至 studio 服务器。
             </p>
           </div>
         </div>

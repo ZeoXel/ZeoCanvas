@@ -474,7 +474,7 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
                     </span>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 custom-scrollbar space-y-2">
-                    {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.IMAGE_EDITOR].map(t => {
+                    {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR].map(t => {
                         const ItemIcon = getNodeIcon(t);
                         return (
                             <button
@@ -500,6 +500,7 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
         <>
             {/* Left Vertical Dock */}
             <div
+                data-sidebar
                 className="fixed left-6 top-1/2 -translate-y-1/2 flex flex-col items-center gap-3 p-2 bg-[#ffffff]/70 dark:bg-slate-900/70 backdrop-blur-2xl border border-slate-300 dark:border-slate-700 rounded-2xl shadow-2xl z-50 animate-in slide-in-from-left-10 duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
                 onMouseLeave={handleSidebarLeave}
             >
@@ -576,6 +577,7 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
 
             {/* Slide-out Panels */}
             <div
+                data-sidebar
                 className={`
                     fixed left-24 top-1/2 -translate-y-1/2 max-h-[75vh] h-auto w-72
                     bg-white/90 dark:bg-slate-900/90 backdrop-blur-2xl border border-slate-200/80 dark:border-slate-700/80 rounded-2xl shadow-2xl

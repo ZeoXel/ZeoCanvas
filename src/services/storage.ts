@@ -1,4 +1,4 @@
-const DB_NAME = 'ls-studio_db';
+const DB_NAME = 'studio_db';
 const DB_VERSION = 1;
 const STORE_NAME = 'app_data';
 

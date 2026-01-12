@@ -4,7 +4,6 @@
 import { AppNode, NodeStatus, NodeType, AudioGenerationMode } from '@/types';
 import { ImageIcon as ImageIconLucide, Video as VideoIconLucide, FolderOpen } from 'lucide-react';
 import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2, Grid3X3, Check } from 'lucide-react';
-import { SceneDirectorOverlay } from './VideoNodeModules';
 import { AudioNodePanel } from './AudioNodePanel';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
 
@@ -23,6 +22,7 @@ interface NodeProps {
     onAction: (id: string, prompt?: string) => void;
     onDelete: (id: string) => void;
     onExpand?: (data: { type: 'image' | 'video', src: string, rect: DOMRect, images?: string[], initialIndex?: number }) => void;
+    onEdit?: (nodeId: string, src: string, originalImage?: string, canvasData?: string) => void;
     onCrop?: (id: string, src: string, type?: 'image' | 'video') => void;
     onNodeMouseDown: (e: React.MouseEvent, id: string) => void;
     onPortMouseDown: (e: React.MouseEvent, id: string, type: 'input' | 'output') => void;
@@ -382,7 +382,7 @@ const AudioVisualizer = ({ isPlaying }: { isPlaying: boolean }) => (
 );
 
 const NodeComponent: React.FC<NodeProps> = ({
-    node, onUpdate, onAction, onDelete, onExpand, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onInputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, onDragResultToCanvas, onGridDragStateChange, inputAssets, onInputReorder, nodeRef, isDragging, isGroupDragging, isSelected, isResizing, isConnecting, zoom = 1
+    node, onUpdate, onAction, onDelete, onExpand, onEdit, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onInputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, onDragResultToCanvas, onGridDragStateChange, inputAssets, onInputReorder, nodeRef, isDragging, isGroupDragging, isSelected, isResizing, isConnecting, zoom = 1
 }) => {
     const inverseScale = 1 / Math.max(0.1, zoom);
     // 检测深色模式
@@ -564,7 +564,7 @@ const NodeComponent: React.FC<NodeProps> = ({
             const ext = src.includes('video') || videoBlobUrl ? 'mp4' : src.includes('audio') ? 'wav' : 'png';
             const a = document.createElement('a');
             a.href = blobUrl;
-            a.download = `ls-studio-${Date.now()}.${ext}`;
+            a.download = `studio-${Date.now()}.${ext}`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -575,6 +575,12 @@ const NodeComponent: React.FC<NodeProps> = ({
             console.error('Download failed:', err);
             // 降级：在新窗口打开
             window.open(src, '_blank');
+        }
+    };
+    const handleEdit = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (onEdit && node.data.image) {
+            onEdit(node.id, node.data.image, node.data.originalImage, node.data.canvasData);
         }
     };
     const handleUploadVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -687,8 +693,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         }
         const ratio = node.data.aspectRatio || '16:9';
         const [w, h] = ratio.split(':').map(Number);
-        const extra = 0; // 局部分镜按钮改为悬浮，不增加额外高度
-        return ((node.width || DEFAULT_NODE_WIDTH) * h / w) + extra;
+        return ((node.width || DEFAULT_NODE_WIDTH) * h / w);
     };
     const nodeHeight = getNodeHeight();
     const nodeWidth = node.width || DEFAULT_NODE_WIDTH;
@@ -702,6 +707,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                     {(node.data.image || node.data.videoUri || node.data.audioUri) && (
                         <div className="flex items-center gap-1">
                             <button onClick={handleDownload} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="下载"><Download size={14} /></button>
+                            {node.data.image && onEdit && <button onClick={handleEdit} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="编辑涂鸦"><Edit size={14} /></button>}
                             {node.type !== NodeType.AUDIO_GENERATOR && <button onClick={handleExpand} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="全屏预览"><Maximize2 size={14} /></button>}
                         </div>
                     )}
@@ -971,10 +977,10 @@ const NodeComponent: React.FC<NodeProps> = ({
             )
         }
 
-        // VIDEO_FACTORY (CUT/CONTINUE模式): croppedFrame 不算作主内容，只在底部缩略图显示
+        // VIDEO_FACTORY 剧情延展模式: croppedFrame 不算作主内容，只在底部缩略图显示
         const hasContent = node.data.image || node.data.videoUri;
 
-        // CUT/CONTINUE 模式特殊处理：始终显示空状态样式，即使有 croppedFrame
+        // 剧情延展模式特殊处理：始终显示空状态样式，即使有 croppedFrame（CUT已合并到CONTINUE，保留向后兼容）
         const isCutOrContinueMode = node.type === NodeType.VIDEO_FACTORY && (generationMode === 'CUT' || generationMode === 'CONTINUE');
         const showEmptyState = isCutOrContinueMode ? !hasContent : !hasContent;
 
@@ -989,11 +995,10 @@ const NodeComponent: React.FC<NodeProps> = ({
                 {showEmptyState ? (
                     <div className={`absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-400 transition-colors ${!isCutOrContinueMode ? bgClass : ''}`}>
                         {isCutOrContinueMode ? (
-                            // CUT/CONTINUE 模式：根据是否已选择关键帧显示不同状态（统一样式）
+                            // 剧情延展模式：根据是否已选择关键帧显示不同状态
                             (() => {
                                 const upstreamVideo = inputAssets?.find(a => a.type === 'video');
                                 const hasCroppedFrame = !!node.data.croppedFrame;
-                                const modeIcon = generationMode === 'CUT' ? <Scissors size={28} className="text-emerald-400/60 dark:text-emerald-500/50" /> : <Film size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />;
 
                                 return (
                                     <div className="flex flex-col items-center gap-2 select-none">
@@ -1002,10 +1007,13 @@ const NodeComponent: React.FC<NodeProps> = ({
                                         ) : hasCroppedFrame ? (
                                             <VideoIcon size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
                                         ) : (
-                                            modeIcon
+                                            <Film size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
                                         )}
                                         <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 dark:text-emerald-400">
-                                            {isWorking ? "生成中..." : (hasCroppedFrame ? "准备生成" : (upstreamVideo ? "选择关键帧" : "连接上游"))}
+                                            {isWorking ? "生成中..." : (hasCroppedFrame ? "准备生成" : (upstreamVideo ? "可选关键帧" : "连接上游"))}
+                                        </span>
+                                        <span className="text-[8px] text-slate-400 dark:text-slate-500">
+                                            {!isWorking && !hasCroppedFrame && upstreamVideo && "不选取则使用最后一帧"}
                                         </span>
                                         {/* 悬浮按钮 - 选择/重新选择关键帧 */}
                                         {upstreamVideo && !isWorking && (
@@ -1017,8 +1025,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                                                 }}
                                                 onMouseDown={(e) => e.stopPropagation()}
                                             >
-                                                <Scissors size={12} className="text-white mr-1.5" />
-                                                <span className="text-[10px] text-white font-medium tracking-wide">{hasCroppedFrame ? "重新选择" : "选择关键帧"}</span>
+                                                <Film size={12} className="text-white mr-1.5" />
+                                                <span className="text-[10px] text-white font-medium tracking-wide">{hasCroppedFrame ? "重新选择" : "选取关键帧"}</span>
                                             </div>
                                         )}
                                     </div>
@@ -1078,26 +1086,6 @@ const NodeComponent: React.FC<NodeProps> = ({
                         {node.status === NodeStatus.ERROR && <div className="absolute inset-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20"><AlertCircle className="text-red-500 mb-2" /><span className="text-xs text-red-200">{node.data.error}</span></div>}
                     </>
                 )}
-                {node.type === NodeType.VIDEO_FACTORY && generationMode === 'CUT' && (videoBlobUrl || node.data.videoUri) &&
-                    <SceneDirectorOverlay
-                        visible={true}
-                        videoRef={mediaRef as React.RefObject<HTMLVideoElement>}
-                        onCrop={() => {
-                            const vid = mediaRef.current as HTMLVideoElement;
-                            if (vid) { // Safety check to prevent null access
-                                const canvas = document.createElement('canvas');
-                                canvas.width = vid.videoWidth;
-                                canvas.height = vid.videoHeight;
-                                const ctx = canvas.getContext('2d');
-                                if (ctx) {
-                                    ctx.drawImage(vid, 0, 0);
-                                    onCrop?.(node.id, canvas.toDataURL('image/png'));
-                                }
-                            }
-                        }}
-                        onTimeHover={() => { }}
-                    />
-                }
             </div>
         );
     };
@@ -1132,7 +1120,7 @@ const NodeComponent: React.FC<NodeProps> = ({
             };
 
             return (
-                <div className={`absolute top-full left-1/2 w-[98%] z-50 flex flex-col items-center justify-start transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? `opacity-100 translate-y-0 scale-100` : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}
+                <div data-config-panel className={`absolute top-full left-1/2 w-[98%] z-50 flex flex-col items-center justify-start transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? `opacity-100 translate-y-0 scale-100` : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}
                     style={{
                         paddingTop: `${8 * inverseScale}px`,
                         transform: `translateX(-50%) scale(${inverseScale})`,
@@ -1192,7 +1180,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 className={`flex items-center gap-1.5 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking
                                     ? 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
                                     : 'bg-gradient-to-r from-amber-400 to-yellow-500 text-black hover:shadow-lg hover:shadow-amber-500/20 hover:scale-105 active:scale-95'
-                                }`}
+                                    }`}
                             >
                                 {isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}
                                 <span>{isWorking ? '处理中...' : 'AI 执行'}</span>
@@ -1286,7 +1274,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         const defaultModel = models[0];
         const currentModelLabel = models.find(m => m.v === node.data.model)?.l || defaultModel?.l || 'AI Model';
 
-        // CUT/CONTINUE 模式：底部缩略图显示 croppedFrame 而非上游视频
+        // 剧情延展模式：底部缩略图显示已选取的关键帧而非上游视频
         const isCutOrContinueMode = node.type === NodeType.VIDEO_FACTORY && (generationMode === 'CUT' || generationMode === 'CONTINUE');
         const thumbnailAssets: InputAsset[] = isCutOrContinueMode && node.data.croppedFrame
             ? [{ id: 'croppedFrame', type: 'image', src: node.data.croppedFrame }]
@@ -1294,7 +1282,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         const showThumbnails = isCutOrContinueMode ? !!node.data.croppedFrame : hasInputs;
 
         return (
-            <div className={`absolute top-full left-1/2 w-[98%] z-50 flex flex-col items-center justify-start transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? `opacity-100 translate-y-0 scale-100` : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}
+            <div data-config-panel className={`absolute top-full left-1/2 w-[98%] z-50 flex flex-col items-center justify-start transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? `opacity-100 translate-y-0 scale-100` : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}
                 style={{
                     paddingTop: `${8 * inverseScale}px`,
                     transform: `translateX(-50%) scale(${inverseScale})`,

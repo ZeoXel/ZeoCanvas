@@ -261,7 +261,7 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                 {resultVideoUrl && (
                     <a
                         href={resultVideoUrl}
-                        download={`ls-studio_seq_${Date.now()}.mp4`}
+                        download={`studio_seq_${Date.now()}.mp4`}
                         onClick={(e) => e.stopPropagation()}
                         className="p-2 bg-white/90 backdrop-blur-md rounded-lg text-slate-700 hover:text-slate-900 border border-slate-300 hover:scale-105 transition-all"
                         title="下载视频"
@@ -358,7 +358,7 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                                 {resultVideoUrl && (
                                     <a
                                         href={resultVideoUrl}
-                                        download={`ls-studio_seq_${Date.now()}.mp4`}
+                                        download={`studio_seq_${Date.now()}.mp4`}
                                         className="p-2.5 bg-white/90 dark:bg-slate-800/90 backdrop-blur-md rounded-lg text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 border border-slate-300 dark:border-slate-600 hover:scale-105 transition-all"
                                         title="下载视频"
                                     >
@@ -586,11 +586,10 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                                             <button
                                                 key={m.id}
                                                 onClick={() => setViduConfig(c => ({ ...c, model: m.id }))}
-                                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all ${
-                                                    viduConfig.model === m.id
+                                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all ${viduConfig.model === m.id
                                                         ? 'bg-blue-500 text-white'
                                                         : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                                                }`}
+                                                    }`}
                                             >
                                                 {m.id === 'viduq2-turbo' ? 'Turbo' : 'Pro'}
                                             </button>
@@ -611,11 +610,10 @@ export const SmartSequenceDock: React.FC<SmartSequenceDockProps> = ({ isOpen, on
                                             <button
                                                 key={r.id}
                                                 onClick={() => setViduConfig(c => ({ ...c, resolution: r.id }))}
-                                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all ${
-                                                    viduConfig.resolution === r.id
+                                                className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all ${viduConfig.resolution === r.id
                                                         ? 'bg-blue-500 text-white'
                                                         : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                                                }`}
+                                                    }`}
                                             >
                                                 {r.id}
                                             </button>

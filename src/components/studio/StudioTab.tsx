@@ -6,7 +6,7 @@ import { Node } from './Node';
 import { SidebarDock } from './SidebarDock';
 import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
-import { SketchEditor } from './SketchEditor';
+import { ImageEditOverlay } from './ImageEditOverlay';
 import { SmartSequenceDock } from './SmartSequenceDock';
 import { generateViduMultiFrame } from '@/services/viduService';
 import { SettingsModal } from './SettingsModal';
@@ -196,9 +196,6 @@ export default function StudioTab() {
         localStorage.setItem('lsai-theme', theme);
     }, [theme]);
 
-    // Sketch Editor State
-    const [isSketchEditorOpen, setIsSketchEditorOpen] = useState(false);
-
     // Multi-Frame Dock State
     const [isMultiFrameOpen, setIsMultiFrameOpen] = useState(false);
 
@@ -256,6 +253,7 @@ export default function StudioTab() {
 
     // Media Overlays
     const [expandedMedia, setExpandedMedia] = useState<any>(null);
+    const [editingImage, setEditingImage] = useState<{ nodeId: string; src: string; originalImage?: string; canvasData?: string } | null>(null);
     const [croppingNodeId, setCroppingNodeId] = useState<string | null>(null);
     const [imageToCrop, setImageToCrop] = useState<string | null>(null);
     const [videoToCrop, setVideoToCrop] = useState<string | null>(null); // 视频帧选择源
@@ -456,8 +454,7 @@ export default function StudioTab() {
         // 提示词节点和素材节点默认 16:9 比例
         const defaultRatio = (node.type === NodeType.PROMPT_INPUT || node.type === NodeType.IMAGE_ASSET || node.type === NodeType.VIDEO_ASSET) ? '16:9' : '1:1';
         const [w, h] = (node.data.aspectRatio || defaultRatio).split(':').map(Number);
-        const extra = (node.type === NodeType.VIDEO_GENERATOR && node.data.generationMode === 'CUT') ? 36 : 0;
-        return ((width * h / w) + extra);
+        return (width * h / w);
     };
 
     const getNodeBounds = (node: AppNode) => {
@@ -632,10 +629,7 @@ export default function StudioTab() {
     }, [saveHistory]);
 
     const addNode = useCallback((type: NodeType, x?: number, y?: number, initialData?: any) => {
-        if (type === NodeType.IMAGE_EDITOR) {
-            setIsSketchEditorOpen(true);
-            return;
-        }
+        // IMAGE_EDITOR type removed - use ImageEditOverlay on existing images instead
 
         try { saveHistory(); } catch (e) { }
 
@@ -705,19 +699,6 @@ export default function StudioTab() {
             return [{ id: `a-${Date.now()}`, type, src, title, timestamp: Date.now() }, ...h];
         });
     }, []);
-
-    const handleSketchResult = (type: 'image' | 'video', result: string, prompt: string) => {
-        const centerX = (-pan.x + window.innerWidth / 2) / scale - 210;
-        const centerY = (-pan.y + window.innerHeight / 2) / scale - 180;
-
-        if (type === 'image') {
-            addNode(NodeType.IMAGE_GENERATOR, centerX, centerY, { image: result, prompt, status: NodeStatus.SUCCESS });
-        } else {
-            addNode(NodeType.VIDEO_GENERATOR, centerX, centerY, { videoUri: result, prompt, status: NodeStatus.SUCCESS });
-        }
-
-        handleAssetGenerated(type, result, prompt || 'Sketch Output');
-    };
 
     // 检查画布坐标是否在空白区域（不与任何节点重叠）
     const isPointOnEmptyCanvas = useCallback((canvasX: number, canvasY: number): boolean => {
@@ -2064,17 +2045,24 @@ export default function StudioTab() {
                 onMouseDown={handleCanvasMouseDown}
                 onDoubleClick={(e) => {
                     e.preventDefault();
-                    // 只在画布空白区域双击时触发（排除节点、组等）
+                    // 只在画布空白区域双击时触发
                     const target = e.target as HTMLElement;
+
+                    // 排除：节点、分组、侧边栏、对话面板、节点配置面板
                     const isOnNode = target.closest('[data-node-id]');
                     const isOnGroup = target.closest('[data-group-id]');
-                    const isCanvasArea = !isOnNode && !isOnGroup && (
-                        target === e.currentTarget ||
-                        target.classList.contains('noise-bg') ||
-                        target.style.backgroundImage?.includes('radial-gradient') ||
-                        target.closest('[data-canvas-container]') === e.currentTarget
-                    );
-                    if (!selectionRect && isCanvasArea) {
+                    const isOnSidebar = target.closest('[data-sidebar]');
+                    const isOnChat = target.closest('[data-chat-panel]');
+                    const isOnConfigPanel = target.closest('[data-config-panel]');
+                    if (isOnNode || isOnGroup || isOnSidebar || isOnChat || isOnConfigPanel || selectionRect) return;
+
+                    // 转换为画布坐标并检查是否在空白区域
+                    const rect = canvasContainerRef.current?.getBoundingClientRect();
+                    if (!rect) return;
+                    const canvasX = (e.clientX - rect.left - pan.x) / scale;
+                    const canvasY = (e.clientY - rect.top - pan.y) / scale;
+
+                    if (isPointOnEmptyCanvas(canvasX, canvasY)) {
                         setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: '' });
                         setContextMenuTarget({ type: 'create' });
                     }
@@ -2252,7 +2240,7 @@ export default function StudioTab() {
 
                     {nodes.map(node => (
                         <Node
-                            key={node.id} node={node} zoom={scale} onUpdate={handleNodeUpdate} onAction={handleNodeAction} onDelete={(id) => deleteNodes([id])} onExpand={setExpandedMedia} onCrop={(id, src, type) => { setCroppingNodeId(id); if (type === 'video') { setVideoToCrop(src); setImageToCrop(null); } else { setImageToCrop(src); setVideoToCrop(null); } }}
+                            key={node.id} node={node} zoom={scale} onUpdate={handleNodeUpdate} onAction={handleNodeAction} onDelete={(id) => deleteNodes([id])} onExpand={setExpandedMedia} onEdit={(nodeId, src, originalImage, canvasData) => setEditingImage({ nodeId, src, originalImage, canvasData })} onCrop={(id, src, type) => { setCroppingNodeId(id); if (type === 'video') { setVideoToCrop(src); setImageToCrop(null); } else { setImageToCrop(src); setVideoToCrop(null); } }}
                             onNodeMouseDown={(e, id) => {
                                 e.stopPropagation();
                                 e.preventDefault(); // 防止拖拽选中文本
@@ -2451,7 +2439,7 @@ export default function StudioTab() {
                         {contextMenuTarget?.type === 'create' && (
                             <>
                                 <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">创建新节点</div>
-                                {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR, NodeType.IMAGE_EDITOR].map(t => { const ItemIcon = getNodeIcon(t); return (<button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" /> {getNodeNameCN(t)} </button>); })}
+                                {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR].map(t => { const ItemIcon = getNodeIcon(t); return (<button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" /> {getNodeNameCN(t)} </button>); })}
                             </>
                         )}
                         {contextMenuTarget?.type === 'group' && (
@@ -2491,7 +2479,6 @@ export default function StudioTab() {
                                 availableTypes = [
                                     { type: NodeType.PROMPT_INPUT, label: '分析视频', icon: FileSearch, color: 'text-emerald-500' },
                                     { type: NodeType.VIDEO_FACTORY, label: '剧情延展', icon: Film, color: 'text-purple-500', generationMode: 'CONTINUE' },
-                                    { type: NodeType.VIDEO_FACTORY, label: '局部分镜', icon: Scissors, color: 'text-orange-500', generationMode: 'CUT' },
                                 ];
                             }
 
@@ -2517,9 +2504,8 @@ export default function StudioTab() {
 
                                 // 根据生成模式设置标题
                                 const getTitleByMode = (): string => {
-                                    if (nodeType === NodeType.VIDEO_FACTORY && generationMode) {
-                                        if (generationMode === 'CONTINUE') return '剧情延展';
-                                        if (generationMode === 'CUT') return '局部分镜';
+                                    if (nodeType === NodeType.VIDEO_FACTORY && generationMode === 'CONTINUE') {
+                                        return '剧情延展';
                                     }
                                     const typeMap: Record<string, string> = {
                                         [NodeType.PROMPT_INPUT]: '素材分析',
@@ -2714,7 +2700,19 @@ export default function StudioTab() {
 
                 {croppingNodeId && (imageToCrop || videoToCrop) && <ImageCropper imageSrc={imageToCrop || undefined} videoSrc={videoToCrop || undefined} onCancel={() => { setCroppingNodeId(null); setImageToCrop(null); setVideoToCrop(null); }} onConfirm={(b) => { handleNodeUpdate(croppingNodeId, { croppedFrame: b }); setCroppingNodeId(null); setImageToCrop(null); setVideoToCrop(null); }} />}
                 <ExpandedView media={expandedMedia} onClose={() => setExpandedMedia(null)} />
-                {isSketchEditorOpen && <SketchEditor onClose={() => setIsSketchEditorOpen(false)} onGenerate={handleSketchResult} />}
+                {editingImage && (
+                    <ImageEditOverlay
+                        imageSrc={editingImage.src}
+                        originalImage={editingImage.originalImage}
+                        canvasData={editingImage.canvasData}
+                        nodeId={editingImage.nodeId}
+                        onClose={() => setEditingImage(null)}
+                        onSave={(nodeId, compositeImage, originalImage, canvasData) => {
+                            handleNodeUpdate(nodeId, { image: compositeImage, originalImage, canvasData });
+                            setEditingImage(null);
+                        }}
+                    />
+                )}
                 <SmartSequenceDock
                     isOpen={isMultiFrameOpen}
                     onClose={() => setIsMultiFrameOpen(false)}

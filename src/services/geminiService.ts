@@ -233,7 +233,7 @@ export const extractLastFrame = (videoSrc: string): Promise<string> => {
 // --- System Prompts ---
 
 const SYSTEM_INSTRUCTION = `
-You are ls-studio AI, an expert multimedia creative assistant.
+You are studio AI, an expert multimedia creative assistant.
 Your goal is to assist users in generating images, videos, audio, and scripts.
 Always be concise, professional, and helpful.
 When the user asks for creative ideas, provide vivid, detailed descriptions suitable for generative AI prompts.

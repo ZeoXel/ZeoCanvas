@@ -5,33 +5,33 @@ import { X, Eraser, Copy, CornerDownLeft, Loader2, Sparkles, Brain, PenLine, Wan
 
 // 使用统一的 Chat API
 const sendChatMessage = async (
-    history: { role: 'user' | 'model', text: string }[],
-    newMessage: string,
-    options?: { isThinkingMode?: boolean, isStoryboard?: boolean, isHelpMeWrite?: boolean }
+  history: { role: 'user' | 'model', text: string }[],
+  newMessage: string,
+  options?: { isThinkingMode?: boolean, isStoryboard?: boolean, isHelpMeWrite?: boolean }
 ): Promise<string> => {
-    const messages = [
-        ...history,
-        { role: 'user' as const, text: newMessage }
-    ];
+  const messages = [
+    ...history,
+    { role: 'user' as const, text: newMessage }
+  ];
 
-    // 确定模式
-    let mode = 'default';
-    if (options?.isHelpMeWrite) mode = 'prompt_enhancer';
-    else if (options?.isStoryboard) mode = 'storyboard';
+  // 确定模式
+  let mode = 'default';
+  if (options?.isHelpMeWrite) mode = 'prompt_enhancer';
+  else if (options?.isStoryboard) mode = 'storyboard';
 
-    const response = await fetch('/api/studio/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, mode })
-    });
+  const response = await fetch('/api/studio/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, mode })
+  });
 
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || `API错误: ${response.status}`);
-    }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `API错误: ${response.status}`);
+  }
 
-    const result = await response.json();
-    return result.message || '无响应';
+  const result = await response.json();
+  return result.message || '无响应';
 };
 
 interface Message {
@@ -239,6 +239,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ isOpen, onClose 
   return (
     <div
       ref={panelRef}
+      data-chat-panel
       className={`fixed right-6 top-1/2 -translate-y-1/2 h-[85vh] w-[420px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-3xl rounded-[24px] border border-slate-300 dark:border-slate-700 shadow-2xl z-40 flex flex-col overflow-hidden ${SPRING_ANIMATION} ${isOpen ? 'opacity-100 translate-x-0 scale-100' : 'opacity-0 translate-x-10 scale-95 pointer-events-none'}`}
       onMouseDown={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}
@@ -279,7 +280,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ isOpen, onClose 
 
               {/* Role Label */}
               <div className="flex items-center gap-2 px-1">
-                {m.role === 'model' && <span className="text-[10px] font-bold text-blue-500/80 dark:text-blue-400/80 uppercase tracking-wider">ls-studio AI</span>}
+                {m.role === 'model' && <span className="text-[10px] font-bold text-blue-500/80 dark:text-blue-400/80 uppercase tracking-wider">studio AI</span>}
                 {m.role === 'user' && <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">You</span>}
               </div>
 

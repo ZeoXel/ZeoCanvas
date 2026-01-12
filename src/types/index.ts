@@ -64,6 +64,8 @@ export interface AppNode {
     userInput?: string; // 用户的简短想法（用于生成提示词的输入）
     model?: string; // Selected AI model
     image?: string; // Base64 (The currently displayed main image)
+    originalImage?: string; // Base64 (Original image before doodles, for editing)
+    canvasData?: string; // Base64 PNG (Doodle layer only, transparent background)
     images?: string[]; // Array of Base64 strings (for multiple generations)
     imageCount?: number; // Number of images to generate (1-4)
     videoCount?: number; // Number of videos to generate (1-4)
