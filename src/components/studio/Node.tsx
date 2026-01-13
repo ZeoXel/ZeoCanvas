@@ -1,20 +1,38 @@
 "use client";
 
-// ... existing imports
 import { AppNode, NodeStatus, NodeType, AudioGenerationMode } from '@/types';
-import { ImageIcon as ImageIconLucide, Video as VideoIconLucide, FolderOpen } from 'lucide-react';
-import { RefreshCw, Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, MoreHorizontal, Wand2, Scaling, FileSearch, Edit, Loader2, Layers, Trash2, X, Upload, Scissors, Film, MousePointerClick, Crop as CropIcon, ChevronDown, ChevronUp, GripHorizontal, Link, Copy, Monitor, Music, Pause, Volume2, Mic2, Grid3X3, Check } from 'lucide-react';
+import { Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, Wand2, Scaling, FileSearch, Edit, Loader2, X, Upload, Film, ChevronDown, Copy, Monitor, Music, Pause, Mic2, Grid3X3, Check, Clock, ArrowRight } from 'lucide-react';
 import { AudioNodePanel } from './AudioNodePanel';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
 
-// ... (keep constants and helper functions: arePropsEqual, safePlay, safePause, InputThumbnails, AudioVisualizer) ...
+// Import shared components and utilities
+import {
+    SecureVideo,
+    globalVideoBlobCache,
+    getProxiedUrl,
+    safePlay,
+    safePause,
+    InputThumbnails,
+    AudioVisualizer,
+    IMAGE_ASPECT_RATIOS,
+    VIDEO_ASPECT_RATIOS,
+    IMAGE_RESOLUTIONS,
+    VIDEO_RESOLUTIONS,
+    IMAGE_COUNTS,
+    VIDEO_COUNTS,
+    getImageModelConfig,
+    GLASS_PANEL,
+    DEFAULT_NODE_WIDTH,
+    DEFAULT_FIXED_HEIGHT,
+    AUDIO_NODE_HEIGHT,
+    getDurationOptions,
+    getDefaultDuration,
+    supportsFirstLastFrame,
+} from './shared';
+import type { InputAsset } from './shared';
 
-// Restore missing constants
-interface InputAsset {
-    id: string;
-    type: 'image' | 'video';
-    src: string;
-}
+// Re-export for backward compatibility
+export { globalVideoBlobCache } from './shared';
 
 interface NodeProps {
     node: AppNode;
@@ -34,6 +52,7 @@ interface NodeProps {
     onResizeMouseDown: (e: React.MouseEvent, id: string, initialWidth: number, initialHeight: number) => void;
     onDragResultToCanvas?: (sourceNodeId: string, type: 'image' | 'video', src: string, canvasX: number, canvasY: number) => void; // 从组图宫格拖拽结果到画布
     onGridDragStateChange?: (state: { isDragging: boolean; type?: 'image' | 'video'; src?: string; screenX?: number; screenY?: number } | null) => void; // 通知父组件拖拽状态变化
+    onBatchUpload?: (files: File[], type: 'image' | 'video', sourceNodeId: string) => void; // 批量上传素材回调
     inputAssets?: InputAsset[];
     onInputReorder?: (nodeId: string, newOrder: string[]) => void;
     nodeRef?: (el: HTMLDivElement | null) => void; // 用于父组件直接操作 DOM
@@ -45,197 +64,6 @@ interface NodeProps {
     isConnecting?: boolean;
     zoom?: number;
 }
-
-const IMAGE_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
-const VIDEO_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
-const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
-const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
-const IMAGE_COUNTS = [1, 2, 3, 4];
-const VIDEO_COUNTS = [1, 2, 3, 4];
-
-// Seedream 比例到尺寸映射
-const SEEDREAM_SIZE_MAP: Record<string, string> = {
-    '1:1': '2048x2048',
-    '4:3': '2304x1728',
-    '3:4': '1728x2304',
-    '16:9': '2560x1440',
-    '9:16': '1440x2560',
-};
-
-// 图像模型参数配置映射
-const IMAGE_MODEL_CONFIG: Record<string, {
-    supportsAspectRatio: boolean;
-    supportsResolution: boolean;
-    supportsMultiImage: boolean;
-    aspectRatios?: string[];
-    resolutions?: string[];
-    defaultAspectRatio?: string;
-    defaultResolution?: string;
-    sizeMap?: Record<string, string>;  // 比例到尺寸映射
-}> = {
-    'doubao-seedream-4-5-251128': {
-        supportsAspectRatio: true,
-        supportsResolution: false,
-        supportsMultiImage: true,
-        aspectRatios: ['1:1', '4:3', '3:4', '16:9', '9:16'],
-        defaultAspectRatio: '1:1',
-        sizeMap: SEEDREAM_SIZE_MAP,
-    },
-    'nano-banana': {
-        supportsAspectRatio: true,
-        supportsResolution: false,
-        supportsMultiImage: true,
-        aspectRatios: ['1:1', '3:4', '4:3', '9:16', '16:9'],
-        defaultAspectRatio: '1:1',
-    },
-    'nano-banana-pro': {
-        supportsAspectRatio: true,
-        supportsResolution: false,
-        supportsMultiImage: true,
-        aspectRatios: ['1:1', '3:4', '4:3', '9:16', '16:9'],
-        defaultAspectRatio: '1:1',
-    },
-};
-
-// 获取模型配置
-const getImageModelConfig = (model: string) => {
-    return IMAGE_MODEL_CONFIG[model] || {
-        supportsAspectRatio: true,
-        supportsResolution: false,
-        supportsMultiImage: false,
-        aspectRatios: IMAGE_ASPECT_RATIOS,
-        defaultAspectRatio: '1:1',
-    };
-};
-const GLASS_PANEL = "bg-[#ffffff]/95 dark:bg-slate-900/95 backdrop-blur-2xl border border-slate-300 dark:border-slate-700 shadow-2xl";
-const DEFAULT_NODE_WIDTH = 420;
-const DEFAULT_FIXED_HEIGHT = 360;
-const AUDIO_NODE_HEIGHT = Math.round(DEFAULT_NODE_WIDTH * 9 / 16); // 16:9 比例 = 236
-
-// --- SECURE VIDEO COMPONENT ---
-// Fetches video as blob to bypass auth/cors issues with <video src>
-// Volcengine URLs are routed through proxy API to avoid CORS
-
-// Helper: Check if URL is from Volcengine and needs proxy
-const isVolcengineUrl = (url: string): boolean => {
-    if (!url || !url.startsWith('http')) return false;
-    try {
-        const urlObj = new URL(url);
-        return urlObj.hostname.includes('tos-cn-beijing.volces.com');
-    } catch {
-        return false;
-    }
-};
-
-// Helper: Get proxied URL for Volcengine
-const getProxiedUrl = (url: string): string => {
-    if (isVolcengineUrl(url)) {
-        return `/api/studio/proxy?url=${encodeURIComponent(url)}`;
-    }
-    return url;
-};
-
-// 全局视频 blob URL 缓存 - SecureVideo 加载后存入，ImageCropper 可直接使用
-export const globalVideoBlobCache = new Map<string, string>();
-
-const SecureVideo = ({ src, className, autoPlay, muted, loop, onMouseEnter, onMouseLeave, onClick, controls, videoRef, style }: any) => {
-    const [blobUrl, setBlobUrl] = useState<string | null>(null);
-    const [error, setError] = useState(false);
-
-    useEffect(() => {
-        if (!src) return;
-        if (src.startsWith('data:') || src.startsWith('blob:')) {
-            setBlobUrl(src);
-            return;
-        }
-
-        // 检查全局缓存 - 避免重复加载
-        const cached = globalVideoBlobCache.get(src);
-        if (cached) {
-            setBlobUrl(cached);
-            return;
-        }
-
-        let active = true;
-        // Use proxy for Volcengine URLs to bypass CORS
-        const fetchUrl = getProxiedUrl(src);
-
-        // Fetch the video content
-        fetch(fetchUrl)
-            .then(response => {
-                if (!response.ok) throw new Error("Video fetch failed");
-                return response.blob();
-            })
-            .then(blob => {
-                if (active) {
-                    // FORCE MIME TYPE TO VIDEO/MP4 to fix black screen issues with generic binary blobs
-                    const mp4Blob = new Blob([blob], { type: 'video/mp4' });
-                    const url = URL.createObjectURL(mp4Blob);
-                    // 存入全局缓存
-                    globalVideoBlobCache.set(src, url);
-                    setBlobUrl(url);
-                }
-            })
-            .catch(err => {
-                console.error("SecureVideo load error:", err);
-                if (active) setError(true);
-            });
-
-        return () => {
-            active = false;
-            // 不再 revoke，因为已存入全局缓存供其他组件使用
-        };
-    }, [src]);
-
-    if (error) {
-        return <div className={`flex items-center justify-center bg-rose-50 text-xs text-rose-500 ${className}`}>Load Error</div>;
-    }
-
-    if (!blobUrl) {
-        return <div className={`flex items-center justify-center bg-slate-100 ${className}`}><Loader2 className="animate-spin text-slate-400" /></div>;
-    }
-
-    return (
-        <video
-            ref={videoRef}
-            src={blobUrl}
-            className={className}
-            autoPlay={autoPlay}
-            muted={muted}
-            loop={loop}
-            controls={controls}
-            playsInline
-            preload="auto"
-            onMouseEnter={onMouseEnter}
-            onMouseLeave={onMouseLeave}
-            onClick={onClick}
-            style={{ backgroundColor: '#f8fafc', ...style }} // Light canvas background for media placeholders
-        />
-    );
-};
-
-// Helper for safe video playback
-const safePlay = (e: React.SyntheticEvent<HTMLVideoElement> | HTMLVideoElement) => {
-    const vid = (e as any).currentTarget || e;
-    if (!vid) return;
-    const p = vid.play();
-    if (p !== undefined) {
-        p.catch((error: any) => {
-            // Ignore AbortError which happens when pausing immediately after playing
-            if (error.name !== 'AbortError') {
-                console.debug("Video play prevented:", error);
-            }
-        });
-    }
-};
-
-const safePause = (e: React.SyntheticEvent<HTMLVideoElement> | HTMLVideoElement) => {
-    const vid = (e as any).currentTarget || e;
-    if (vid) {
-        vid.pause();
-        vid.currentTime = 0; // Optional: reset to start
-    }
-};
 
 // Custom Comparator for React.memo to prevent unnecessary re-renders during drag
 const arePropsEqual = (prev: NodeProps, next: NodeProps) => {
@@ -257,132 +85,8 @@ const arePropsEqual = (prev: NodeProps, next: NodeProps) => {
     return true;
 };
 
-const InputThumbnails = ({ assets, onReorder }: { assets: InputAsset[], onReorder: (newOrder: string[]) => void }) => {
-    const [draggingId, setDraggingId] = useState<string | null>(null);
-    const [dragOffset, setDragOffset] = useState(0);
-    const onReorderRef = useRef(onReorder);
-    onReorderRef.current = onReorder;
-    const stateRef = useRef({ draggingId: null as string | null, startX: 0, originalAssets: [] as InputAsset[] });
-    const THUMB_WIDTH = 48;
-    const GAP = 6;
-    const ITEM_FULL_WIDTH = THUMB_WIDTH + GAP;
-
-    // Use refs to store handlers for cleanup
-    const handlersRef = useRef<{ move: ((e: MouseEvent) => void) | null; up: ((e: MouseEvent) => void) | null }>({ move: null, up: null });
-
-    const handleGlobalMouseMove = useCallback((e: MouseEvent) => {
-        if (!stateRef.current.draggingId) return;
-        const delta = e.clientX - stateRef.current.startX;
-        setDragOffset(delta);
-    }, []);
-
-    const handleGlobalMouseUp = useCallback((e: MouseEvent) => {
-        if (!stateRef.current.draggingId) return;
-        const { draggingId, startX, originalAssets } = stateRef.current;
-        const currentOffset = e.clientX - startX;
-        const moveSlots = Math.round(currentOffset / ITEM_FULL_WIDTH);
-        const currentIndex = originalAssets.findIndex(a => a.id === draggingId);
-        const newIndex = Math.max(0, Math.min(originalAssets.length - 1, currentIndex + moveSlots));
-
-        if (newIndex !== currentIndex) {
-            const newOrderIds = originalAssets.map(a => a.id);
-            const [moved] = newOrderIds.splice(currentIndex, 1);
-            newOrderIds.splice(newIndex, 0, moved);
-            onReorderRef.current(newOrderIds);
-        }
-        setDraggingId(null);
-        setDragOffset(0);
-        stateRef.current.draggingId = null;
-        document.body.style.cursor = '';
-        if (handlersRef.current.move) window.removeEventListener('mousemove', handlersRef.current.move);
-        if (handlersRef.current.up) window.removeEventListener('mouseup', handlersRef.current.up);
-    }, [ITEM_FULL_WIDTH]);
-
-    // Update refs when handlers change
-    useEffect(() => {
-        handlersRef.current = { move: handleGlobalMouseMove, up: handleGlobalMouseUp };
-    }, [handleGlobalMouseMove, handleGlobalMouseUp]);
-
-    useEffect(() => {
-        return () => {
-            document.body.style.cursor = '';
-            if (handlersRef.current.move) window.removeEventListener('mousemove', handlersRef.current.move);
-            if (handlersRef.current.up) window.removeEventListener('mouseup', handlersRef.current.up);
-        }
-    }, []);
-
-    const handleMouseDown = (e: React.MouseEvent, id: string) => {
-        e.stopPropagation();
-        e.preventDefault();
-        setDraggingId(id);
-        setDragOffset(0);
-        stateRef.current = { draggingId: id, startX: e.clientX, originalAssets: [...assets] };
-        document.body.style.cursor = 'grabbing';
-        window.addEventListener('mousemove', handleGlobalMouseMove);
-        window.addEventListener('mouseup', handleGlobalMouseUp);
-    };
-
-    if (!assets || assets.length === 0) return null;
-
-    return (
-        <div className="flex items-center justify-center h-14 pointer-events-none select-none relative z-0" onMouseDown={e => e.stopPropagation()}>
-            <div className="relative flex items-center gap-[6px]">
-                {assets.map((asset, index) => {
-                    const isItemDragging = asset.id === draggingId;
-                    const originalIndex = assets.findIndex(a => a.id === draggingId);
-                    let translateX = 0;
-                    let scale = 1;
-                    let zIndex = 10;
-
-                    if (isItemDragging) {
-                        translateX = dragOffset;
-                        scale = 1.15;
-                        zIndex = 100;
-                    } else if (draggingId) {
-                        const draggingVirtualIndex = Math.max(0, Math.min(assets.length - 1, originalIndex + Math.round(dragOffset / ITEM_FULL_WIDTH)));
-                        if (index > originalIndex && index <= draggingVirtualIndex) translateX = -ITEM_FULL_WIDTH;
-                        else if (index < originalIndex && index >= draggingVirtualIndex) translateX = ITEM_FULL_WIDTH;
-                    }
-                    const isVideo = asset.type === 'video';
-                    return (
-                        <div
-                            key={asset.id}
-                            className={`relative rounded-md overflow-hidden cursor-grab active:cursor-grabbing pointer-events-auto border border-slate-400 shadow-lg bg-white/90 group`}
-                            style={{
-                                width: `${THUMB_WIDTH}px`, height: `${THUMB_WIDTH}px`,
-                                transform: `translateX(${translateX}px) scale(${scale})`,
-                                zIndex,
-                                transition: isItemDragging ? 'none' : 'transform 0.5s cubic-bezier(0.32,0.72,0,1)',
-                            }}
-                            onMouseDown={(e) => handleMouseDown(e, asset.id)}
-                        >
-                            {isVideo ? (
-                                <SecureVideo src={asset.src} className="w-full h-full object-cover pointer-events-none select-none opacity-80 group-hover:opacity-100 transition-opacity bg-white dark:bg-slate-800" muted loop autoPlay />
-                            ) : (
-                                <img src={asset.src} className="w-full h-full object-cover pointer-events-none select-none opacity-80 group-hover:opacity-100 transition-opacity bg-white dark:bg-slate-800" alt="" />
-                            )}
-                            <div className="absolute inset-0 ring-1 ring-inset ring-white/10 rounded-md"></div>
-                            <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 bg-white/90 backdrop-blur-md rounded-full flex items-center justify-center border border-slate-400 z-20 shadow-sm pointer-events-none">
-                                <span className="text-[9px] font-bold text-slate-900 leading-none">{index + 1}</span>
-                            </div>
-                        </div>
-                    )
-                })}
-            </div>
-        </div>
-    )
-};
-
-const AudioVisualizer = ({ isPlaying }: { isPlaying: boolean }) => (
-    <div className="flex items-center justify-center gap-[2px] h-12 w-full opacity-60">
-        {[...Array(20)].map((_, i) => (
-            <div key={i} className="w-1 bg-cyan-400/80 rounded-full" style={{ height: isPlaying ? `${20 + Math.random() * 80}%` : '20%', transition: 'height 0.1s ease', animation: isPlaying ? `pulse 0.5s infinite ${i * 0.05}s` : 'none' }} />
-        ))}
-    </div>
-);
-
 const NodeComponent: React.FC<NodeProps> = ({
-    node, onUpdate, onAction, onDelete, onExpand, onEdit, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onInputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, onDragResultToCanvas, onGridDragStateChange, inputAssets, onInputReorder, nodeRef, isDragging, isGroupDragging, isSelected, isResizing, isConnecting, zoom = 1
+    node, onUpdate, onAction, onDelete, onExpand, onEdit, onCrop, onNodeMouseDown, onPortMouseDown, onPortMouseUp, onOutputPortAction, onInputPortAction, onNodeContextMenu, onMediaContextMenu, onResizeMouseDown, onDragResultToCanvas, onGridDragStateChange, onBatchUpload, inputAssets, onInputReorder, nodeRef, isDragging, isGroupDragging, isSelected, isResizing, isConnecting, zoom = 1
 }) => {
     const inverseScale = 1 / Math.max(0.1, zoom);
     // 检测深色模式
@@ -676,6 +380,7 @@ const NodeComponent: React.FC<NodeProps> = ({
             case NodeType.VIDEO_FACTORY: return { icon: Film, color: 'text-green-400', border: 'border-green-500/30' };
             case NodeType.AUDIO_GENERATOR: return { icon: Mic2, color: 'text-red-400', border: 'border-red-500/30' };
             case NodeType.IMAGE_EDITOR: return { icon: Edit, color: 'text-blue-400', border: 'border-blue-500/30' };
+            case NodeType.MULTI_FRAME_VIDEO: return { icon: Film, color: 'text-emerald-400', border: 'border-emerald-500/30' };
             default: return { icon: Type, color: 'text-slate-600', border: 'border-slate-300' };
         }
     };
@@ -685,6 +390,10 @@ const NodeComponent: React.FC<NodeProps> = ({
         if (node.height) return node.height;
         if (node.type === NodeType.IMAGE_EDITOR) return DEFAULT_FIXED_HEIGHT;
         if (node.type === NodeType.AUDIO_GENERATOR) return AUDIO_NODE_HEIGHT;
+        // 多帧视频节点：使用 16:9 比例（配置面板在底部悬浮）
+        if (node.type === NodeType.MULTI_FRAME_VIDEO) {
+            return Math.round((node.width || DEFAULT_NODE_WIDTH) * 9 / 16);
+        }
         // 提示词节点和素材节点：默认 16:9 比例
         if (node.type === NodeType.PROMPT_INPUT || node.type === NodeType.IMAGE_ASSET || node.type === NodeType.VIDEO_ASSET) {
             const ratio = node.data.aspectRatio || '16:9';
@@ -793,36 +502,105 @@ const NodeComponent: React.FC<NodeProps> = ({
             );
         }
 
+        // 多帧视频节点：预览区域（视频结果或帧预览）
+        if (node.type === NodeType.MULTI_FRAME_VIDEO) {
+            const frames = node.data.multiFrameData?.frames || [];
+            const hasResult = !!node.data.videoUri;
+
+            return (
+                <div className="w-full h-full relative group/media overflow-hidden bg-white dark:bg-slate-800" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+                    {hasResult ? (
+                        // 有生成结果：显示视频
+                        <SecureVideo
+                            videoRef={mediaRef}
+                            src={node.data.videoUri}
+                            className="w-full h-full object-cover bg-white dark:bg-slate-800"
+                            loop
+                            muted
+                            onContextMenu={(e: React.MouseEvent) => onMediaContextMenu?.(e, node.id, 'video', node.data.videoUri!)}
+                        />
+                    ) : frames.length > 0 ? (
+                        // 有帧但无结果：显示选中帧预览（默认第一帧）
+                        <div className="w-full h-full relative">
+                            <img src={(editingFrameId && frames.find(f => f.id === editingFrameId)?.src) || frames[0].src} className="w-full h-full object-cover opacity-80" alt="" />
+                            {/* 帧数量和时长标签 */}
+                            <div className="absolute top-3 right-3 px-2.5 py-1 bg-white/90 dark:bg-slate-800/90 backdrop-blur rounded-lg text-[10px] text-slate-600 dark:text-slate-300 font-bold border border-slate-200 dark:border-slate-600">
+                                {frames.length} 帧 | {frames.reduce((acc, f, i) => i < frames.length - 1 ? acc + (f.transition?.duration || 5) : acc, 0)}s
+                            </div>
+                            {/* 生成中遮罩 */}
+                            {isWorking && (
+                                <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center">
+                                    <Loader2 className="animate-spin text-emerald-500" size={32} />
+                                    <span className="mt-2 text-xs font-bold text-emerald-600 dark:text-emerald-400">{node.data.progress || '生成中...'}</span>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        // 空状态
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-emerald-50/30 dark:bg-emerald-900/10">
+                            {isWorking ? (
+                                <Loader2 className="animate-spin text-emerald-500" size={28} />
+                            ) : (
+                                <Film size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
+                            )}
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 dark:text-emerald-400">
+                                {isWorking ? '生成中...' : '添加关键帧'}
+                            </span>
+                        </div>
+                    )}
+                    {/* 错误显示 */}
+                    {node.status === NodeStatus.ERROR && (
+                        <div className="absolute inset-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md flex flex-col items-center justify-center p-4 text-center z-20">
+                            <AlertCircle className="text-red-500 mb-2" size={24} />
+                            <span className="text-[10px] text-red-500 leading-relaxed">{node.data.error}</span>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         // 图片素材节点
         if (node.type === NodeType.IMAGE_ASSET) {
             const hasImage = !!node.data.image;
             const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-                const file = e.target.files?.[0];
-                if (!file || !file.type.startsWith('image/')) return;
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+
+                // 过滤出有效的图片文件
+                const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+                if (imageFiles.length === 0) return;
+
+                // 批量上传：创建多个节点并分组
+                if (imageFiles.length > 1 && onBatchUpload) {
+                    onBatchUpload(imageFiles, 'image', node.id);
+                    // 清空 input 以便再次选择
+                    e.target.value = '';
+                    return;
+                }
+
+                // 单个文件：原有逻辑
+                const file = imageFiles[0];
                 const reader = new FileReader();
                 reader.onload = (ev) => {
                     const base64 = ev.target?.result as string;
-                    // 读取图片尺寸并自适应节点大小
                     const img = new window.Image();
                     img.onload = () => {
                         const imgWidth = img.width;
                         const imgHeight = img.height;
-                        // 计算最接近的标准比例
                         const ratio = imgWidth / imgHeight;
                         let aspectRatio = '1:1';
                         if (ratio > 1.6) aspectRatio = '16:9';
                         else if (ratio > 1.2) aspectRatio = '4:3';
                         else if (ratio < 0.625) aspectRatio = '9:16';
                         else if (ratio < 0.83) aspectRatio = '3:4';
-                        // 计算节点尺寸，使用默认宽度 420 保持一致
                         const newWidth = DEFAULT_NODE_WIDTH;
                         const newHeight = DEFAULT_NODE_WIDTH * imgHeight / imgWidth;
-                        // 更新节点数据和尺寸
                         onUpdate(node.id, { image: base64, aspectRatio }, { width: newWidth, height: newHeight });
                     };
                     img.src = base64;
                 };
                 reader.readAsDataURL(file);
+                e.target.value = '';
             };
             return (
                 <div className="w-full h-full relative group/asset overflow-hidden bg-white dark:bg-slate-800" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
@@ -835,8 +613,9 @@ const NodeComponent: React.FC<NodeProps> = ({
                             >
                                 <Upload size={28} className="text-blue-400/60 dark:text-blue-500/50" />
                                 <span className="text-[10px] font-bold uppercase tracking-widest text-blue-500 dark:text-blue-400">上传图片</span>
+                                <span className="text-[8px] text-blue-400/60 dark:text-blue-500/40 mt-1">支持批量上传</span>
                             </div>
-                            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
+                            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleImageUpload} />
                         </div>
                     ) : (
                         <>
@@ -865,10 +644,25 @@ const NodeComponent: React.FC<NodeProps> = ({
         if (node.type === NodeType.VIDEO_ASSET) {
             const hasVideo = !!node.data.videoUri;
             const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-                const file = e.target.files?.[0];
-                if (!file || !file.type.startsWith('video/')) return;
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+
+                // 过滤出有效的视频文件
+                const videoFiles = Array.from(files).filter(f => f.type.startsWith('video/'));
+                if (videoFiles.length === 0) return;
+
+                // 批量上传：创建多个节点并分组
+                if (videoFiles.length > 1 && onBatchUpload) {
+                    onBatchUpload(videoFiles, 'video', node.id);
+                    e.target.value = '';
+                    return;
+                }
+
+                // 单个文件：原有逻辑
+                const file = videoFiles[0];
                 const url = URL.createObjectURL(file);
                 onUpdate(node.id, { videoUri: url });
+                e.target.value = '';
             };
             return (
                 <div className="w-full h-full relative group/asset overflow-hidden bg-white dark:bg-slate-800" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
@@ -881,8 +675,9 @@ const NodeComponent: React.FC<NodeProps> = ({
                             >
                                 <Upload size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
                                 <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 dark:text-emerald-400">上传视频</span>
+                                <span className="text-[8px] text-emerald-400/60 dark:text-emerald-500/40 mt-1">支持批量上传</span>
                             </div>
-                            <input type="file" ref={fileInputRef} className="hidden" accept="video/*" onChange={handleVideoUpload} />
+                            <input type="file" ref={fileInputRef} className="hidden" accept="video/*" multiple onChange={handleVideoUpload} />
                         </div>
                     ) : (
                         <>
@@ -982,7 +777,11 @@ const NodeComponent: React.FC<NodeProps> = ({
 
         // 剧情延展模式特殊处理：始终显示空状态样式，即使有 croppedFrame（CUT已合并到CONTINUE，保留向后兼容）
         const isCutOrContinueMode = node.type === NodeType.VIDEO_FACTORY && (generationMode === 'CUT' || generationMode === 'CONTINUE');
-        const showEmptyState = isCutOrContinueMode ? !hasContent : !hasContent;
+        // 首尾帧模式检测：显式设置模式 OR 已上传首尾帧数据
+        const hasFirstLastFrameData = !!(node.data.firstLastFrameData?.firstFrame || node.data.firstLastFrameData?.lastFrame);
+        const isFirstLastFrameMode = (node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) &&
+            (generationMode === 'FIRST_LAST_FRAME' || hasFirstLastFrameData);
+        const showEmptyState = (isCutOrContinueMode || isFirstLastFrameMode) ? !hasContent : !hasContent;
 
         const isVideoNode = node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY;
         const themeColor = isVideoNode ? 'emerald' : 'blue';
@@ -993,8 +792,118 @@ const NodeComponent: React.FC<NodeProps> = ({
         return (
             <div className="w-full h-full relative group/media overflow-hidden bg-white dark:bg-slate-800" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
                 {showEmptyState ? (
-                    <div className={`absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-400 transition-colors ${!isCutOrContinueMode ? bgClass : ''}`}>
-                        {isCutOrContinueMode ? (
+                    <div className={`absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-400 transition-colors ${!(isCutOrContinueMode || isFirstLastFrameMode) ? bgClass : ''}`}>
+                        {isFirstLastFrameMode ? (
+                            // 首尾帧模式：显示首帧和尾帧上传区域
+                            (() => {
+                                const firstFrame = node.data.firstLastFrameData?.firstFrame;
+                                const lastFrame = node.data.firstLastFrameData?.lastFrame;
+                                const hasFrames = !!firstFrame && !!lastFrame;
+
+                                const handleFrameUpload = (frameType: 'first' | 'last') => (e: React.ChangeEvent<HTMLInputElement>) => {
+                                    const file = e.target.files?.[0];
+                                    if (!file || !file.type.startsWith('image/')) return;
+                                    const reader = new FileReader();
+                                    reader.onload = (ev) => {
+                                        const base64 = ev.target?.result as string;
+                                        const currentData = node.data.firstLastFrameData || {};
+                                        onUpdate(node.id, {
+                                            firstLastFrameData: {
+                                                ...currentData,
+                                                [frameType === 'first' ? 'firstFrame' : 'lastFrame']: base64
+                                            }
+                                        });
+                                    };
+                                    reader.readAsDataURL(file);
+                                    e.target.value = ''; // 清空以便重复上传相同文件
+                                };
+
+                                return (
+                                    <div className="w-full h-full flex flex-col items-center justify-center p-4 select-none">
+                                        {isWorking ? (
+                                            <div className="flex flex-col items-center gap-2">
+                                                <Loader2 className="animate-spin text-emerald-500" size={28} />
+                                                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 dark:text-emerald-400">
+                                                    生成中...
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                {/* 首尾帧上传区域 */}
+                                                <div className="flex items-center justify-center gap-3 w-full max-w-[320px]">
+                                                    {/* 首帧上传框 */}
+                                                    <div className="relative flex-1 aspect-video rounded-xl border-2 border-dashed border-emerald-300 dark:border-emerald-600 hover:border-emerald-400 dark:hover:border-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/20 overflow-hidden transition-all group/first">
+                                                        {firstFrame ? (
+                                                            <>
+                                                                <img src={firstFrame} className="w-full h-full object-cover" alt="首帧" />
+                                                                <button
+                                                                    className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-red-500 rounded-full text-white opacity-0 group-hover/first:opacity-100 transition-all"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        const currentData = node.data.firstLastFrameData || {};
+                                                                        onUpdate(node.id, {
+                                                                            firstLastFrameData: { ...currentData, firstFrame: undefined }
+                                                                        });
+                                                                    }}
+                                                                    onMouseDown={(e) => e.stopPropagation()}
+                                                                >
+                                                                    <X size={10} />
+                                                                </button>
+                                                            </>
+                                                        ) : (
+                                                            <label className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer">
+                                                                <Plus size={16} className="text-emerald-400 dark:text-emerald-500" />
+                                                                <span className="text-[8px] font-bold text-emerald-500 dark:text-emerald-400 mt-1">首帧</span>
+                                                                <input type="file" className="hidden" accept="image/*" onChange={handleFrameUpload('first')} />
+                                                            </label>
+                                                        )}
+                                                    </div>
+
+                                                    {/* 箭头指示 */}
+                                                    <div className="flex flex-col items-center gap-0.5 text-emerald-400/60 dark:text-emerald-500/50">
+                                                        <ArrowRight size={16} />
+                                                        <span className="text-[7px] font-bold text-slate-400 dark:text-slate-500 tracking-wider">过渡</span>
+                                                    </div>
+
+                                                    {/* 尾帧上传框 */}
+                                                    <div className="relative flex-1 aspect-video rounded-xl border-2 border-dashed border-emerald-300 dark:border-emerald-600 hover:border-emerald-400 dark:hover:border-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/20 overflow-hidden transition-all group/last">
+                                                        {lastFrame ? (
+                                                            <>
+                                                                <img src={lastFrame} className="w-full h-full object-cover" alt="尾帧" />
+                                                                <button
+                                                                    className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-red-500 rounded-full text-white opacity-0 group-hover/last:opacity-100 transition-all"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        const currentData = node.data.firstLastFrameData || {};
+                                                                        onUpdate(node.id, {
+                                                                            firstLastFrameData: { ...currentData, lastFrame: undefined }
+                                                                        });
+                                                                    }}
+                                                                    onMouseDown={(e) => e.stopPropagation()}
+                                                                >
+                                                                    <X size={10} />
+                                                                </button>
+                                                            </>
+                                                        ) : (
+                                                            <label className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer">
+                                                                <Plus size={16} className="text-emerald-400 dark:text-emerald-500" />
+                                                                <span className="text-[8px] font-bold text-emerald-500 dark:text-emerald-400 mt-1">尾帧</span>
+                                                                <input type="file" className="hidden" accept="image/*" onChange={handleFrameUpload('last')} />
+                                                            </label>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* 状态提示 */}
+                                                <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-500/70 dark:text-emerald-400/70 mt-3">
+                                                    {hasFrames ? '准备生成' : '上传首尾帧'}
+                                                </span>
+                                            </>
+                                        )}
+                                    </div>
+                                );
+                            })()
+                        ) : isCutOrContinueMode ? (
                             // 剧情延展模式：根据是否已选择关键帧显示不同状态
                             (() => {
                                 const upstreamVideo = inputAssets?.find(a => a.type === 'video');
@@ -1095,6 +1004,19 @@ const NodeComponent: React.FC<NodeProps> = ({
 
     // 提示词节点的需求输入状态
     const [promptRequest, setPromptRequest] = useState(node.data.userInput || '');
+
+    // 多帧视频节点的文件输入引用
+    const multiFrameFileInputRef = useRef<HTMLInputElement>(null);
+
+    // 多帧视频节点：拖拽排序状态
+    const [draggingFrameId, setDraggingFrameId] = useState<string | null>(null);
+    const [frameDragOffset, setFrameDragOffset] = useState(0);
+    const [frameJustDropped, setFrameJustDropped] = useState<string | null>(null); // 刚松开的帧ID，用于禁用过渡动画
+    const frameDragStateRef = useRef({ draggingId: null as string | null, startX: 0, originalFrames: [] as any[] });
+    const frameDragHandlersRef = useRef<{ move: ((e: MouseEvent) => void) | null; up: ((e: MouseEvent) => void) | null }>({ move: null, up: null });
+
+    // 多帧视频节点：帧间配置编辑状态
+    const [editingFrameId, setEditingFrameId] = useState<string | null>(null);
 
     const renderBottomPanel = () => {
         // 素材节点不需要底部面板
@@ -1209,6 +1131,343 @@ const NodeComponent: React.FC<NodeProps> = ({
                     onInputResizeStart={handleInputResizeStart}
                     onCmdEnter={handleCmdEnter}
                 />
+            );
+        }
+
+        // 多帧视频节点：帧列表 + 配置面板
+        if (node.type === NodeType.MULTI_FRAME_VIDEO) {
+            const frames = node.data.multiFrameData?.frames || [];
+            const viduModel = node.data.multiFrameData?.viduModel || 'viduq2-turbo';
+            const viduResolution = node.data.multiFrameData?.viduResolution || '720p';
+            const hasResult = !!node.data.videoUri;
+
+            // 拖拽排序常量
+            const FRAME_WIDTH = 48;
+            const FRAME_GAP = 6;
+            const ITEM_FULL_WIDTH = FRAME_WIDTH + FRAME_GAP;
+
+            // 帧文件上传处理
+            const handleFrameUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+                if (e.target.files && e.target.files.length > 0) {
+                    const files = Array.from(e.target.files);
+                    const readers = files.map((file) => new Promise<{ id: string; src: string; transition: { duration: number; prompt: string } }>((resolve) => {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => resolve({
+                            id: `mf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                            src: ev.target?.result as string,
+                            transition: { duration: 4, prompt: '' }
+                        });
+                        reader.readAsDataURL(file);
+                    }));
+                    Promise.all(readers).then(newItems => {
+                        onUpdate(node.id, {
+                            multiFrameData: {
+                                frames: [...frames, ...newItems].slice(0, 10),
+                                viduModel,
+                                viduResolution,
+                                taskId: node.data.multiFrameData?.taskId
+                            }
+                        });
+                    });
+                }
+                e.target.value = '';
+            };
+
+            // 删除帧
+            const handleDeleteFrame = (frameId: string) => {
+                onUpdate(node.id, {
+                    multiFrameData: {
+                        frames: frames.filter(f => f.id !== frameId),
+                        viduModel,
+                        viduResolution,
+                        taskId: node.data.multiFrameData?.taskId
+                    }
+                });
+            };
+
+            // 更新 Vidu 配置
+            const updateViduConfig = (config: { model?: 'viduq2-turbo' | 'viduq2-pro'; resolution?: '540p' | '720p' | '1080p' }) => {
+                onUpdate(node.id, {
+                    multiFrameData: {
+                        frames,
+                        viduModel: config.model || viduModel,
+                        viduResolution: config.resolution || viduResolution,
+                        taskId: node.data.multiFrameData?.taskId
+                    }
+                });
+            };
+
+            // 更新帧转场配置
+            const updateFrameTransition = (frameId: string, transition: { duration?: number; prompt?: string }) => {
+                const newFrames = frames.map(f => f.id === frameId ? {
+                    ...f,
+                    transition: { ...f.transition, ...transition }
+                } : f);
+                onUpdate(node.id, {
+                    multiFrameData: { frames: newFrames, viduModel, viduResolution, taskId: node.data.multiFrameData?.taskId }
+                });
+            };
+
+            // 拖拽排序处理
+            const handleFrameDragStart = (e: React.MouseEvent, frameId: string) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setDraggingFrameId(frameId);
+                setFrameDragOffset(0);
+                frameDragStateRef.current = { draggingId: frameId, startX: e.clientX, originalFrames: [...frames] };
+                document.body.style.cursor = 'grabbing';
+
+                const handleMove = (ev: MouseEvent) => {
+                    if (!frameDragStateRef.current.draggingId) return;
+                    const delta = ev.clientX - frameDragStateRef.current.startX;
+                    setFrameDragOffset(delta);
+                };
+
+                const handleUp = (ev: MouseEvent) => {
+                    if (!frameDragStateRef.current.draggingId) return;
+                    const { draggingId, startX, originalFrames: origFrames } = frameDragStateRef.current;
+                    const currentOffset = ev.clientX - startX;
+                    const moveSlots = Math.round(currentOffset / ITEM_FULL_WIDTH);
+                    const currentIndex = origFrames.findIndex(f => f.id === draggingId);
+                    const newIndex = Math.max(0, Math.min(origFrames.length - 1, currentIndex + moveSlots));
+
+                    // 先清理事件监听和光标
+                    window.removeEventListener('mousemove', handleMove);
+                    window.removeEventListener('mouseup', handleUp);
+                    document.body.style.cursor = '';
+                    frameDragStateRef.current.draggingId = null;
+
+                    // 标记刚松开的帧，禁用其过渡动画
+                    setFrameJustDropped(draggingId);
+
+                    // 立即清除拖拽状态
+                    setDraggingFrameId(null);
+                    setFrameDragOffset(0);
+
+                    if (newIndex !== currentIndex) {
+                        // 位置变化：更新数据
+                        const newFrames = [...origFrames];
+                        const [moved] = newFrames.splice(currentIndex, 1);
+                        newFrames.splice(newIndex, 0, moved);
+                        onUpdate(node.id, {
+                            multiFrameData: { frames: newFrames, viduModel, viduResolution, taskId: node.data.multiFrameData?.taskId }
+                        });
+                    }
+
+                    // 延迟清除 justDropped 状态，恢复过渡动画
+                    setTimeout(() => setFrameJustDropped(null), 50);
+                };
+
+                frameDragHandlersRef.current = { move: handleMove, up: handleUp };
+                window.addEventListener('mousemove', handleMove);
+                window.addEventListener('mouseup', handleUp);
+            };
+
+            // 计算帧位移
+            const getFrameTransform = (frameId: string, index: number) => {
+                const isDragging = frameId === draggingFrameId;
+                const originalIndex = frames.findIndex(f => f.id === draggingFrameId);
+                let translateX = 0;
+                let scale = 1;
+                let zIndex = 10;
+
+                if (isDragging) {
+                    translateX = frameDragOffset;
+                    scale = 1.1;
+                    zIndex = 100;
+                } else if (draggingFrameId) {
+                    const virtualIndex = Math.max(0, Math.min(frames.length - 1, originalIndex + Math.round(frameDragOffset / ITEM_FULL_WIDTH)));
+                    if (index > originalIndex && index <= virtualIndex) translateX = -ITEM_FULL_WIDTH;
+                    else if (index < originalIndex && index >= virtualIndex) translateX = ITEM_FULL_WIDTH;
+                }
+
+                return { translateX, scale, zIndex, isDragging };
+            };
+
+            // 结果模式：只显示配置信息
+            if (hasResult) {
+                const viduModelLabel = viduModel === 'viduq2-turbo' ? 'Vidu Turbo' : 'Vidu Pro';
+                return (
+                    <div className={`absolute top-full left-1/2 w-[98%] z-50 transition-all duration-500 ${isOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'}`}
+                        style={{ paddingTop: `${8 * inverseScale}px`, transform: `translateX(-50%) scale(${inverseScale})`, transformOrigin: 'top center' }}
+                    >
+                        <div className={`rounded-[20px] p-1 ${GLASS_PANEL}`} onMouseDown={e => e.stopPropagation()}>
+                            <div className="bg-white dark:bg-slate-800 rounded-[16px] p-3">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold text-emerald-500 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 rounded-md">{viduModelLabel}</span>
+                                    <span className="text-[10px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-700 px-1.5 py-0.5 rounded">{viduResolution}</span>
+                                    <span className="text-[10px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-700 px-1.5 py-0.5 rounded">{frames.length} 帧</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // 获取当前编辑的帧信息
+            const editingFrame = editingFrameId ? frames.find(f => f.id === editingFrameId) : null;
+            const editingFrameIndex = editingFrameId ? frames.findIndex(f => f.id === editingFrameId) : -1;
+            const isEditingTransition = editingFrame && editingFrameIndex < frames.length - 1;
+
+            return (
+                <div data-config-panel className={`absolute top-full left-1/2 w-[98%] z-50 flex flex-col items-center justify-start transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isOpen ? `opacity-100 translate-y-0 scale-100` : 'opacity-0 translate-y-[-10px] scale-95 pointer-events-none'}`}
+                    style={{ paddingTop: `${8 * inverseScale}px`, transform: `translateX(-50%) scale(${inverseScale})`, transformOrigin: 'top center' }}
+                >
+                    <div className={`w-full rounded-[20px] p-1 flex flex-col gap-1 ${GLASS_PANEL} relative z-[100]`} onMouseDown={e => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
+                        <div className="relative group/input bg-white dark:bg-slate-800 rounded-[16px] flex flex-col overflow-hidden">
+                            {/* 帧列表 */}
+                            <div className="flex items-center gap-1.5 px-2 pt-2 pb-1 overflow-x-auto custom-scrollbar select-none">
+                                {frames.map((frame, index) => {
+                                    const { translateX, scale, zIndex, isDragging } = getFrameTransform(frame.id, index);
+                                    const isLastFrame = index === frames.length - 1;
+                                    const isEditing = editingFrameId === frame.id;
+
+                                    return (
+                                        <div
+                                            key={frame.id}
+                                            className={`relative shrink-0 rounded-lg overflow-hidden border ${isEditing ? 'border-emerald-400 ring-2 ring-emerald-400/30' : 'border-slate-300 dark:border-slate-600'} hover:border-emerald-400 bg-slate-50 dark:bg-slate-800 group/frame cursor-grab active:cursor-grabbing`}
+                                            style={{
+                                                width: `${FRAME_WIDTH}px`,
+                                                height: `${FRAME_WIDTH}px`,
+                                                transform: `translateX(${translateX}px) scale(${scale})`,
+                                                zIndex,
+                                                transition: (isDragging || frame.id === frameJustDropped) ? 'none' : 'transform 0.3s cubic-bezier(0.32,0.72,0,1)',
+                                            }}
+                                            onMouseDown={(e) => handleFrameDragStart(e, frame.id)}
+                                            onClick={(e) => {
+                                                if (!isLastFrame && !isDragging) {
+                                                    e.stopPropagation();
+                                                    setEditingFrameId(isEditing ? null : frame.id);
+                                                }
+                                            }}
+                                        >
+                                            <img src={frame.src} className="w-full h-full object-cover pointer-events-none" alt="" draggable={false} />
+                                            {/* 序号 */}
+                                            <div className="absolute top-0.5 right-0.5 w-3.5 h-3.5 bg-white/95 dark:bg-slate-700/95 rounded-full flex items-center justify-center text-[8px] font-bold text-slate-800 dark:text-slate-200 shadow-sm pointer-events-none">{index + 1}</div>
+                                            {/* 删除按钮 */}
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setEditingFrameId(null); handleDeleteFrame(frame.id); }}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                className="absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full flex items-center justify-center bg-white/95 dark:bg-slate-700/95 hover:bg-red-500 text-slate-700 dark:text-slate-300 hover:text-white transition-colors opacity-0 group-hover/frame:opacity-100 shadow-sm"
+                                            >
+                                                <X size={8} strokeWidth={3} />
+                                            </button>
+                                            {/* 转场时长标签 - 非最后一帧显示 */}
+                                            {!isLastFrame && (
+                                                <div className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 px-1 rounded text-[7px] font-bold ${isEditing ? 'bg-emerald-500 text-white' : 'bg-slate-800/70 text-white'}`}>
+                                                    {frame.transition?.duration || 4}s
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+
+                                {/* 添加按钮 */}
+                                {frames.length < 10 && (
+                                    <div
+                                        className="w-12 h-12 shrink-0 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 hover:border-emerald-400 bg-slate-50 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 flex flex-col items-center justify-center cursor-pointer transition-all active:scale-95"
+                                        onClick={() => multiFrameFileInputRef.current?.click()}
+                                    >
+                                        <Plus size={12} className="text-slate-400" />
+                                    </div>
+                                )}
+                            </div>
+                            <input type="file" ref={multiFrameFileInputRef} className="hidden" accept="image/*" multiple onChange={handleFrameUpload} />
+
+                            {/* 转场提示词输入区（编辑模式显示） */}
+                            {isEditingTransition ? (
+                                <textarea
+                                    value={editingFrame.transition?.prompt || ''}
+                                    onChange={(e) => updateFrameTransition(editingFrame.id, { prompt: e.target.value })}
+                                    placeholder={`${editingFrameIndex + 1}→${editingFrameIndex + 2} 转场运镜/动作提示词（可选）...`}
+                                    className="w-full bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-500/60 dark:placeholder-slate-400/60 px-3 py-2 focus:outline-none resize-none custom-scrollbar font-medium leading-relaxed"
+                                    style={{ height: '52px' }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onFocus={() => setIsInputFocused(true)}
+                                    onBlur={() => setIsInputFocused(false)}
+                                    onKeyDown={(e) => {
+                                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && frames.length >= 2 && !isWorking) {
+                                            e.preventDefault();
+                                            handleActionClick();
+                                        }
+                                    }}
+                                />
+                            ) : (
+                                <div className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">
+                                    点击帧配置转场提示词...
+                                </div>
+                            )}
+                        </div>
+                        {/* 底部配置栏 */}
+                        <div className="flex items-center justify-between px-2 pb-1 pt-1 relative z-20">
+                            <div className="flex items-center gap-2">
+                                {/* 模型选择 */}
+                                <div className="relative group/model">
+                                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 dark:text-slate-300 hover:text-emerald-500 dark:hover:text-emerald-400">
+                                        <span>{viduModel === 'viduq2-turbo' ? 'Vidu Turbo' : 'Vidu Pro'}</span><ChevronDown size={10} />
+                                    </div>
+                                    <div className="absolute bottom-full left-0 pb-2 w-28 opacity-0 translate-y-2 pointer-events-none group-hover/model:opacity-100 group-hover/model:translate-y-0 group-hover/model:pointer-events-auto transition-all duration-200 z-[200]">
+                                        <div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                                            {([{ l: 'Vidu Turbo', v: 'viduq2-turbo' as const }, { l: 'Vidu Pro', v: 'viduq2-pro' as const }]).map(m => (
+                                                <div key={m.v} onClick={() => updateViduConfig({ model: m.v })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 ${viduModel === m.v ? 'text-emerald-500 dark:text-emerald-400 bg-slate-50 dark:bg-slate-700' : 'text-slate-600 dark:text-slate-300'}`}>{m.l}</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                                {/* 分辨率选择 */}
+                                <div className="relative group/res">
+                                    <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 dark:text-slate-300 hover:text-emerald-500 dark:hover:text-emerald-400">
+                                        <span>{viduResolution}</span><ChevronDown size={10} />
+                                    </div>
+                                    <div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/res:opacity-100 group-hover/res:translate-y-0 group-hover/res:pointer-events-auto transition-all duration-200 z-[200]">
+                                        <div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                                            {(['540p', '720p', '1080p'] as const).map(r => (
+                                                <div key={r} onClick={() => updateViduConfig({ resolution: r })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 ${viduResolution === r ? 'text-emerald-500 dark:text-emerald-400 bg-slate-50 dark:bg-slate-700' : 'text-slate-600 dark:text-slate-300'}`}>{r}</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                                {/* 时长滑块（编辑模式显示） */}
+                                {isEditingTransition && (
+                                    <div className="flex items-center gap-1.5 px-1">
+                                        <span className="text-[9px] text-slate-400">{editingFrame.transition?.duration || 4}s</span>
+                                        <input
+                                            type="range"
+                                            min="2"
+                                            max="7"
+                                            step="1"
+                                            value={editingFrame.transition?.duration || 4}
+                                            onChange={(e) => updateFrameTransition(editingFrame.id, { duration: parseInt(e.target.value) })}
+                                            className="w-16 h-1 bg-slate-200 dark:bg-slate-600 rounded-full appearance-none cursor-pointer accent-emerald-500 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:bg-emerald-500 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer"
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {/* 关闭编辑按钮 */}
+                                {isEditingTransition && (
+                                    <button
+                                        onClick={() => setEditingFrameId(null)}
+                                        className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all"
+                                    >
+                                        <X size={10} /><span>关闭</span>
+                                    </button>
+                                )}
+                                {/* 生成按钮 */}
+                                <button
+                                    onClick={handleActionClick}
+                                    disabled={frames.length < 2 || isWorking}
+                                    className={`flex items-center gap-1.5 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${frames.length >= 2 && !isWorking
+                                        ? 'bg-gradient-to-r from-emerald-500 to-green-500 text-white hover:shadow-lg hover:shadow-emerald-500/20 hover:scale-105 active:scale-95'
+                                        : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'}`}
+                                >
+                                    <Wand2 size={12} />
+                                    <span>{isWorking ? '生成中...' : '生成'}</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             );
         }
 
@@ -1363,6 +1622,27 @@ const NodeComponent: React.FC<NodeProps> = ({
                                     </div>
                                 );
                             })()}
+                            {/* 时长选择 - 仅视频节点显示 */}
+                            {(node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) && (
+                                <div className="relative group/duration">
+                                    <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 dark:text-slate-300 hover:text-blue-400 dark:hover:text-blue-300">
+                                        <Clock size={12} /><span>{node.data.duration === -1 ? '自动' : `${node.data.duration || getDefaultDuration(node.data.model)}s`}</span>
+                                    </div>
+                                    <div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/duration:opacity-100 group-hover/duration:translate-y-0 group-hover/duration:pointer-events-auto transition-all duration-200 z-[200]">
+                                        <div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden max-h-48 overflow-y-auto custom-scrollbar">
+                                            {getDurationOptions(node.data.model).map(d => (
+                                                <div
+                                                    key={d}
+                                                    onClick={() => onUpdate(node.id, { duration: d })}
+                                                    className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 ${(node.data.duration || getDefaultDuration(node.data.model)) === d ? 'text-blue-400 dark:text-blue-300 bg-slate-50 dark:bg-slate-700' : 'text-slate-600 dark:text-slate-300'}`}
+                                                >
+                                                    {d === -1 ? '自动' : `${d}s`}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                             {/* 组图数量选择 - 仅图像生成节点显示 */}
                             {node.type === NodeType.IMAGE_GENERATOR && (
                                 <div className="relative group/count">
@@ -1390,7 +1670,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                                     <span>取消</span>
                                 </button>
                             )}
-                            <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-black hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}<span>{isWorking ? '生成中...' : '生成'}</span></button>
+                            <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 dark:bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}<span>{isWorking ? '生成中...' : '生成'}</span></button>
                         </div>
                     </div>
                 </div>
@@ -1417,6 +1697,10 @@ const NodeComponent: React.FC<NodeProps> = ({
         // 音频节点 - 红色
         if (node.type === NodeType.AUDIO_GENERATOR) {
             return 'ring-red-400/80';
+        }
+        // 多帧视频节点 - 绿色（与视频节点统一）
+        if (node.type === NodeType.MULTI_FRAME_VIDEO) {
+            return 'ring-emerald-400/80';
         }
         // 默认
         return 'ring-slate-300/80';
@@ -1463,13 +1747,15 @@ const NodeComponent: React.FC<NodeProps> = ({
                     const isAssetNode = node.type === NodeType.IMAGE_ASSET || node.type === NodeType.VIDEO_ASSET;
                     if (isAssetNode) return null;
 
-                    // 生成节点（图像/视频）支持左连接点交互创建上游节点
+                    // 生成节点（图像/视频/多帧视频）支持左连接点交互创建上游节点
                     const isGeneratorNode = node.type === NodeType.IMAGE_GENERATOR ||
                         node.type === NodeType.VIDEO_GENERATOR ||
-                        node.type === NodeType.VIDEO_FACTORY;
+                        node.type === NodeType.VIDEO_FACTORY ||
+                        node.type === NodeType.MULTI_FRAME_VIDEO;
 
                     // 提示词节点也支持左连接点（连接图片/视频进行分析）
                     const isPromptNode = node.type === NodeType.PROMPT_INPUT;
+                    const isMultiFrameNode = node.type === NodeType.MULTI_FRAME_VIDEO;
                     const hasInputPortAction = isGeneratorNode || isPromptNode;
 
                     const handleInputDoubleClick = (e: React.MouseEvent) => {
@@ -1480,13 +1766,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                     };
 
                     const handleInputMouseUp = (e: React.MouseEvent) => {
-                        // 先保存连接状态，因为 onPortMouseUp 会清除它
-                        const wasConnecting = isConnecting;
+                        // 仅处理连接，不触发操作菜单（双击或拖拽释放到空白区域时由StudioTab处理）
                         onPortMouseUp(e, node.id, 'input');
-                        // 如果是从其他节点拖拽释放到生成节点/提示词节点的输入端口，弹出创建菜单
-                        if (hasInputPortAction && onInputPortAction && wasConnecting) {
-                            onInputPortAction(node.id, { x: e.clientX, y: e.clientY });
-                        }
                     };
 
                     // 左连接点统一绿色，无状态灰色
@@ -1510,7 +1791,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                             onMouseDown={(e) => onPortMouseDown(e, node.id, 'input')}
                             onMouseUp={handleInputMouseUp}
                             onDoubleClick={handleInputDoubleClick}
-                            title={isPromptNode ? "双击添加媒体分析" : isGeneratorNode ? "双击添加输入节点" : "Input"}
+                            title={isPromptNode ? "双击添加媒体分析" : isMultiFrameNode ? "双击添加输入图片" : isGeneratorNode ? "双击添加输入节点" : "Input"}
                         >
                             <Plus size={hasInputPortAction ? 12 : 10} strokeWidth={3} className={`transition-colors ${iconColorClass}`} />
                         </div>
@@ -1540,13 +1821,8 @@ const NodeComponent: React.FC<NodeProps> = ({
                         }
                     };
                     const handleOutputMouseUp = (e: React.MouseEvent) => {
-                        // 先保存连接状态，因为 onPortMouseUp 会清除它
-                        const wasConnecting = isConnecting;
+                        // 仅处理连接，不触发操作菜单（双击或拖拽释放到空白区域时由StudioTab处理）
                         onPortMouseUp(e, node.id, 'output');
-                        // 如果是拖拽释放且有输出能力，也触发选框
-                        if (hasOutputAction && onOutputPortAction && wasConnecting) {
-                            onOutputPortAction(node.id, { x: e.clientX, y: e.clientY });
-                        }
                     };
                     return (
                         <div

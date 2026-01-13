@@ -56,7 +56,7 @@ async function querySeedanceTask(baseUrl: string, apiKey: string, taskId: string
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { prompt, model, aspectRatio, enhancePrompt, enableUpsample, images } = body;
+        const { prompt, model, aspectRatio, duration, enhancePrompt, enableUpsample, images, imageRoles } = body;
 
         if (!prompt) {
             return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
@@ -72,16 +72,31 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: `API Key未配置 (${modelType})` }, { status: 500 });
         }
 
-        console.log(`[Studio Video API] Creating task with model: ${model}, type: ${modelType}`);
+        console.log(`[Studio Video API] Creating task with model: ${model}, type: ${modelType}, images: ${images?.length || 0}, imageRoles: ${JSON.stringify(imageRoles)}`);
 
         // ============ Seedance API (火山引擎) ============
         if (modelType === 'seedance') {
+            // Seedance: 将 duration 追加到提示词 (--dur X)
+            let finalPrompt = prompt;
+            if (duration && duration > 0) {
+                finalPrompt = `${prompt} --dur ${duration}`;
+            }
+
             // 构建 Seedance 请求体
-            const content: any[] = [{ type: 'text', text: prompt }];
-            // 如果有图片，添加图片内容 (用于图生视频)
+            const content: any[] = [{ type: 'text', text: finalPrompt }];
+
+            // 如果有图片，添加图片内容 (支持首尾帧 role)
             if (images && images.length > 0) {
-                images.forEach((img: string) => {
-                    content.push({ type: 'image_url', image_url: { url: img } });
+                images.forEach((img: string, index: number) => {
+                    const imageContent: any = {
+                        type: 'image_url',
+                        image_url: { url: img }
+                    };
+                    // 添加 role 字段（用于首尾帧：first_frame / last_frame）
+                    if (imageRoles && imageRoles[index]) {
+                        imageContent.role = imageRoles[index];
+                    }
+                    content.push(imageContent);
                 });
             }
 

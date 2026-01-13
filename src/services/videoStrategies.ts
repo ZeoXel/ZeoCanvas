@@ -7,6 +7,7 @@ export interface StrategyResult {
     videoInput: any;
     inputImageForGeneration: string | null;
     referenceImages: string[] | undefined;
+    imageRoles?: string[];  // 图片角色标记（用于首尾帧：['first_frame', 'last_frame']）
     generationMode: VideoGenerationMode;
 }
 
@@ -87,33 +88,52 @@ export const processStoryContinuator = async (
     };
 };
 
-// --- Module: FrameWeaver (收尾插帧) ---
+// --- Module: FrameWeaver (首尾帧视频生成) ---
 export const processFrameWeaver = async (
-    node: AppNode, 
-    inputs: AppNode[], 
+    node: AppNode,
+    inputs: AppNode[],
     prompt: string
 ): Promise<StrategyResult> => {
+    // 优先从 firstLastFrameData 获取首尾帧（节点内上传的图片）
+    let firstFrame = node.data.firstLastFrameData?.firstFrame;
+    let lastFrame = node.data.firstLastFrameData?.lastFrame;
+
+    // 如果节点内没有首尾帧，从上游输入获取（2个图片输入 = 首尾帧）
+    if (!firstFrame || !lastFrame) {
+        const imageInputs = inputs.filter(n => n.data.image || n.data.croppedFrame);
+        if (imageInputs.length >= 2) {
+            // 按输入顺序：第一个为首帧，第二个为尾帧
+            firstFrame = imageInputs[0].data.croppedFrame || imageInputs[0].data.image;
+            lastFrame = imageInputs[1].data.croppedFrame || imageInputs[1].data.image;
+        }
+    }
+
+    console.log(`[FrameWeaver] firstFrame: ${firstFrame ? 'exists' : 'none'}, lastFrame: ${lastFrame ? 'exists' : 'none'}`);
+
+    if (firstFrame && lastFrame) {
+        console.log(`[FrameWeaver] Using first-last frame mode with 2 images`);
+        return {
+            finalPrompt: prompt,
+            videoInput: null,
+            inputImageForGeneration: firstFrame,  // 首帧作为主输入
+            referenceImages: [firstFrame, lastFrame],  // 传递给 API
+            imageRoles: ['first_frame', 'last_frame'],  // Seedance 首尾帧角色标记
+            generationMode: 'FIRST_LAST_FRAME'
+        };
+    }
+
+    // 回退：单图或无图模式
     const inputImages: string[] = [];
     inputs.forEach(n => {
         if (n.data.croppedFrame) inputImages.push(n.data.croppedFrame);
         else if (n.data.image) inputImages.push(n.data.image);
     });
 
-    let finalPrompt = prompt;
-
-    if (inputImages.length >= 2) {
-        try { 
-            finalPrompt = await orchestrateVideoPrompt(inputImages, prompt); 
-        } catch (e) {
-            console.warn("FrameWeaver: Orchestration failed, using raw prompt", e);
-        }
-    }
-
     return {
-        finalPrompt,
+        finalPrompt: prompt,
         videoInput: null,
-        inputImageForGeneration: inputImages[0], 
-        referenceImages: inputImages, 
+        inputImageForGeneration: inputImages[0] || null,
+        referenceImages: inputImages.length > 0 ? inputImages : undefined,
         generationMode: 'FIRST_LAST_FRAME'
     };
 };
@@ -266,7 +286,17 @@ export const getGenerationStrategy = async (
     inputs: AppNode[],
     basePrompt: string
 ): Promise<StrategyResult> => {
-    const mode = node.data.generationMode || 'DEFAULT';
+    // 自动检测首尾帧模式：
+    // 1. 节点内上传了首尾帧数据
+    // 2. 或者连接了恰好2个图片输入
+    const hasFirstLastFrameData = node.data.firstLastFrameData?.firstFrame && node.data.firstLastFrameData?.lastFrame;
+    const imageInputs = inputs.filter(n => n.data.image || n.data.croppedFrame);
+    const hasTwoImageInputs = imageInputs.length === 2;
+
+    const shouldUseFirstLastFrame = hasFirstLastFrameData || hasTwoImageInputs;
+    const mode = shouldUseFirstLastFrame ? 'FIRST_LAST_FRAME' : (node.data.generationMode || 'DEFAULT');
+
+    console.log(`[VideoStrategy] Mode: ${mode}, hasFirstLastFrameData: ${hasFirstLastFrameData}, hasTwoImageInputs: ${hasTwoImageInputs}`);
 
     switch (mode) {
         case 'CHARACTER_REF':

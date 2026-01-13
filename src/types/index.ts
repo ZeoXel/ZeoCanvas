@@ -8,6 +8,7 @@ export enum NodeType {
   VIDEO_FACTORY = 'VIDEO_FACTORY', // 视频工厂：展示和编辑视频结果
   IMAGE_EDITOR = 'IMAGE_EDITOR',
   AUDIO_GENERATOR = 'AUDIO_GENERATOR',
+  MULTI_FRAME_VIDEO = 'MULTI_FRAME_VIDEO', // 智能多帧视频：多张关键帧+转场生成视频
 }
 
 export enum NodeStatus {
@@ -96,6 +97,20 @@ export interface AppNode {
 
     // Reference Images (用户上传的参考图，区别于生成结果)
     referenceImages?: string[]; // Base64 strings of uploaded reference images
+
+    // Multi-Frame Video (智能多帧视频节点数据)
+    multiFrameData?: {
+      frames: SmartSequenceItem[];  // 关键帧列表
+      viduModel?: 'viduq2-turbo' | 'viduq2-pro';  // Vidu 模型
+      viduResolution?: '540p' | '720p' | '1080p'; // Vidu 分辨率
+      taskId?: string;              // Vidu 任务 ID (用于轮询)
+    };
+
+    // First-Last Frame (首尾帧视频生成)
+    firstLastFrameData?: {
+      firstFrame?: string;  // Base64 首帧图片
+      lastFrame?: string;   // Base64 尾帧图片
+    };
   };
   inputs: string[]; // IDs of nodes this node connects FROM
 }
@@ -107,6 +122,8 @@ export interface Group {
   width: number;
   height: number;
   title: string;
+  hasOutputPort?: boolean; // 是否显示右侧连接点（批量素材分组用）
+  nodeIds?: string[]; // 分组包含的节点ID列表
 }
 
 export interface Connection {

@@ -18,10 +18,12 @@ export async function GET(request: NextRequest) {
         const allowedHosts = [
             'ark-content-generation-cn-beijing.tos-cn-beijing.volces.com',
             'ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com',
+            'prod-ss-vidu.s3.cn-northwest-1.amazonaws.com.cn', // Vidu S3
         ];
 
         const urlObj = new URL(url);
         if (!allowedHosts.some(host => urlObj.hostname.includes(host))) {
+            console.error('[Proxy API] Blocked URL:', urlObj.hostname);
             return NextResponse.json({ error: '不允许的 URL 来源' }, { status: 403 });
         }
 

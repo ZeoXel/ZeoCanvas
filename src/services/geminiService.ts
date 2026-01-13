@@ -525,10 +525,11 @@ export const generateImageFromText = async (
 export const generateVideo = async (
     prompt: string,
     model: string,
-    options: { aspectRatio?: string, count?: number, generationMode?: VideoGenerationMode, resolution?: string } = {},
+    options: { aspectRatio?: string, count?: number, generationMode?: VideoGenerationMode, resolution?: string, duration?: number } = {},
     inputImageBase64?: string | null,
     videoInput?: any,
-    referenceImages?: string[]
+    referenceImages?: string[],
+    imageRoles?: string[]  // 图片角色标记（用于首尾帧：['first_frame', 'last_frame']）
 ): Promise<{ uri: string, isFallbackImage?: boolean, videoMetadata?: any, uris?: string[] }> => {
     const modelType = getExternalModelType(model);
 
@@ -536,11 +537,14 @@ export const generateVideo = async (
     if (isExternalModel(model) && (modelType === 'veo' || modelType === 'seedance')) {
         try {
             // 准备图片参数
-            const images: string[] = [];
-            if (inputImageBase64) images.push(inputImageBase64);
-            if (referenceImages) images.push(...referenceImages);
+            // 首尾帧模式：referenceImages 已包含 [首帧, 尾帧]，不需要再添加 inputImageBase64
+            // 其他模式：使用 inputImageBase64 作为单图输入
+            const isFirstLastFrameMode = options.generationMode === 'FIRST_LAST_FRAME' && referenceImages && referenceImages.length >= 2;
+            const images: string[] = isFirstLastFrameMode
+                ? referenceImages  // 首尾帧模式：直接使用 [首帧, 尾帧]
+                : (inputImageBase64 ? [inputImageBase64] : []);  // 其他模式：单图输入
 
-            console.log(`[${modelType}] Starting video generation with model: ${model}`);
+            console.log(`[${modelType}] Starting video generation with model: ${model}, mode: ${options.generationMode}, images: ${images.length}`);
 
             const response = await fetch('/api/studio/video', {
                 method: 'POST',
@@ -549,9 +553,11 @@ export const generateVideo = async (
                     prompt,
                     model,
                     aspectRatio: options.aspectRatio || '16:9',
+                    duration: options.duration,  // 视频时长（秒）
                     enhancePrompt: false, // 已在prompt中添加质量后缀
                     enableUpsample: options.resolution === '1080p',
                     images: images.length > 0 ? images : undefined,
+                    imageRoles: imageRoles,  // 图片角色（首尾帧：first_frame/last_frame）
                 }),
             });
 

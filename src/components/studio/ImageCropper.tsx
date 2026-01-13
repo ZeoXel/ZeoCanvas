@@ -2,25 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Check, Crop, Move, Film, Loader2 } from 'lucide-react';
-import { globalVideoBlobCache } from './Node';
-
-// Helper: Check if URL is from Volcengine (needs proxy)
-const isVolcengineUrl = (url: string): boolean => {
-    try {
-        const u = new URL(url);
-        return u.hostname.includes('volccdn.com') || u.hostname.includes('bytecdn.cn') || u.hostname.includes('volces.com') || u.hostname.includes('tos-cn-beijing');
-    } catch {
-        return false;
-    }
-};
-
-// Helper: Get proxied URL for Volcengine
-const getProxiedUrl = (url: string): string => {
-    if (isVolcengineUrl(url)) {
-        return `/api/studio/proxy?url=${encodeURIComponent(url)}`;
-    }
-    return url;
-};
+import { globalVideoBlobCache, getProxiedUrl } from './shared';
 
 interface ImageCropperProps {
   imageSrc?: string;

@@ -7,10 +7,9 @@ import { SidebarDock } from './SidebarDock';
 import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
 import { ImageEditOverlay } from './ImageEditOverlay';
-import { SmartSequenceDock } from './SmartSequenceDock';
-import { generateViduMultiFrame } from '@/services/viduService';
+import { generateViduMultiFrame, queryViduTask, ViduMultiFrameConfig } from '@/services/viduService';
 import { SettingsModal } from './SettingsModal';
-import { AppNode, NodeType, NodeStatus, Connection, ContextMenuState, Group, Workflow, SmartSequenceItem, Canvas, VideoGenerationMode } from '@/types';
+import { AppNode, NodeType, NodeStatus, Connection, ContextMenuState, Group, Workflow, Canvas, VideoGenerationMode } from '@/types';
 import { generateImageFromText, generateVideo, analyzeImage, editImageWithText, planStoryboard, orchestrateVideoPrompt, urlToBase64, extractLastFrame, generateAudio } from '@/services/geminiService';
 import { getGenerationStrategy } from '@/services/videoStrategies';
 import { createMusicCustom, SunoSongInfo } from '@/services/sunoService';
@@ -18,8 +17,8 @@ import { synthesizeSpeech, MinimaxGenerateParams } from '@/services/minimaxServi
 import { saveToStorage, loadFromStorage } from '@/services/storage';
 import {
     Plus, Copy, Trash2, Type, Image as ImageIcon, Video as VideoIcon,
-    Brush, MousePointerClick, LayoutTemplate, X, Film, Link, RefreshCw, Upload,
-    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan, Music, Mic2, FileSearch, Scissors
+    MousePointerClick, LayoutTemplate, X, RefreshCw, Film, Brush, Mic2, Music, FileSearch,
+    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan
 } from 'lucide-react';
 
 // Apple Physics Curve
@@ -196,9 +195,6 @@ export default function StudioTab() {
         localStorage.setItem('lsai-theme', theme);
     }, [theme]);
 
-    // Multi-Frame Dock State
-    const [isMultiFrameOpen, setIsMultiFrameOpen] = useState(false);
-
     // Settings State
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -225,7 +221,7 @@ export default function StudioTab() {
 
     // Interaction / Selection
     const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]); // Changed to Array for multi-select
-    const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+    const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // 支持多分组选中
     const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
     const [draggingNodeParentGroupId, setDraggingNodeParentGroupId] = useState<string | null>(null);
     const [draggingGroup, setDraggingGroup] = useState<any>(null);
@@ -266,6 +262,11 @@ export default function StudioTab() {
         canvasY: number;
     } | null>(null);
 
+    // 复制拖拽预览状态
+    const [copyDragPreview, setCopyDragPreview] = useState<{
+        nodes: { x: number; y: number; width: number; height: number }[];
+    } | null>(null);
+
     // Refs for closures
     const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);
@@ -276,6 +277,7 @@ export default function StudioTab() {
     const rafRef = useRef<number | null>(null); // For RAF Throttling
     const canvasContainerRef = useRef<HTMLDivElement>(null); // Canvas container ref for coordinate offset
     const nodeRefsMap = useRef<Map<string, HTMLDivElement>>(new Map()); // 节点 DOM 引用，用于直接操作
+    const groupRefsMap = useRef<Map<string, HTMLDivElement>>(new Map()); // 分组 DOM 引用，用于直接操作
     const connectionPathsRef = useRef<Map<string, SVGPathElement>>(new Map()); // 连接线 SVG path 引用
     const dragPositionsRef = useRef<Map<string, { x: number, y: number }>>(new Map()); // 拖拽中节点的实时位置
 
@@ -297,11 +299,15 @@ export default function StudioTab() {
         nodeHeight: number,
         // 多选拖动：其他被选中节点的初始位置
         otherSelectedNodes?: { id: string, startX: number, startY: number }[],
+        // 多选拖动：被选中的分组的初始位置及其内部节点
+        selectedGroups?: { id: string, startX: number, startY: number, childNodes: { id: string, startX: number, startY: number }[] }[],
         // 当前拖拽位置（用于 DOM 直接操作后提交 state）
         currentX?: number,
         currentY?: number,
         currentDx?: number,
-        currentDy?: number
+        currentDy?: number,
+        // Cmd/Ctrl + 拖拽复制
+        isCopyDrag?: boolean
     } | null>(null);
 
     const resizeContextRef = useRef<{
@@ -321,6 +327,16 @@ export default function StudioTab() {
         mouseStartX: number,
         mouseStartY: number,
         childNodes: { id: string, startX: number, startY: number }[]
+    } | null>(null);
+
+    const resizeGroupRef = useRef<{
+        id: string,
+        initialWidth: number,
+        initialHeight: number,
+        startX: number,
+        startY: number,
+        currentWidth?: number,
+        currentHeight?: number
     } | null>(null);
 
     // Helper to get mouse position relative to canvas container (accounting for Navbar offset)
@@ -476,6 +492,23 @@ export default function StudioTab() {
         const pos = getNodePosition(node.id) || { x: node.x, y: node.y };
         const width = node.width || 420;
         const height = node.height || getApproxNodeHeight(node);
+
+        // 如果是 output 端口，检查节点是否在有 hasOutputPort 的分组中
+        if (portType === 'output') {
+            const sourceGroup = groupsRef.current.find(g => {
+                if (!g.hasOutputPort) return false;
+                const cx = pos.x + width / 2;
+                const cy = pos.y + height / 2;
+                return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height;
+            });
+            if (sourceGroup) {
+                return {
+                    x: sourceGroup.x + sourceGroup.width + PORT_OFFSET,
+                    y: sourceGroup.y + sourceGroup.height / 2
+                };
+            }
+        }
+
         const y = pos.y + height / 2;
         // 连接点中心 = 节点边缘 + PORT_OFFSET（连接点在节点外部）
         return portType === 'output'
@@ -551,6 +584,7 @@ export default function StudioTab() {
             case NodeType.VIDEO_FACTORY: return '视频工厂';
             case NodeType.AUDIO_GENERATOR: return '灵感音乐';
             case NodeType.IMAGE_EDITOR: return '图像编辑';
+            case NodeType.MULTI_FRAME_VIDEO: return '智能多帧';
             default: return t;
         }
     };
@@ -564,6 +598,7 @@ export default function StudioTab() {
             case NodeType.VIDEO_FACTORY: return VideoIcon;
             case NodeType.AUDIO_GENERATOR: return Mic2;
             case NodeType.IMAGE_EDITOR: return Brush;
+            case NodeType.MULTI_FRAME_VIDEO: return Scan;
             default: return Plus;
         }
     };
@@ -644,11 +679,13 @@ export default function StudioTab() {
                         'gemini-2.5-flash',
             generationMode: type === NodeType.VIDEO_GENERATOR ? 'DEFAULT' : undefined,
             // 图像/视频节点默认比例为 16:9
-            aspectRatio: (type === NodeType.IMAGE_GENERATOR || type === NodeType.VIDEO_GENERATOR || type === NodeType.VIDEO_FACTORY) ? '16:9' : undefined,
+            aspectRatio: (type === NodeType.IMAGE_GENERATOR || type === NodeType.VIDEO_GENERATOR || type === NodeType.VIDEO_FACTORY || type === NodeType.MULTI_FRAME_VIDEO) ? '16:9' : undefined,
             // 音频节点默认配置
             audioMode: type === NodeType.AUDIO_GENERATOR ? defaultAudioMode : undefined,
             musicConfig: type === NodeType.AUDIO_GENERATOR ? { mv: 'chirp-v4', tags: 'pop, catchy' } : undefined,
             voiceConfig: type === NodeType.AUDIO_GENERATOR ? { voiceId: 'female-shaonv', speed: 1, emotion: 'calm' } : undefined,
+            // 多帧视频节点默认配置
+            multiFrameData: type === NodeType.MULTI_FRAME_VIDEO ? { frames: [], viduModel: 'viduq2-turbo', viduResolution: '720p' } : undefined,
             ...initialData
         };
 
@@ -660,7 +697,8 @@ export default function StudioTab() {
             [NodeType.VIDEO_GENERATOR]: '视频生成',
             [NodeType.VIDEO_FACTORY]: '视频工厂',
             [NodeType.AUDIO_GENERATOR]: '灵感音乐',
-            [NodeType.IMAGE_EDITOR]: '图像编辑'
+            [NodeType.IMAGE_EDITOR]: '图像编辑',
+            [NodeType.MULTI_FRAME_VIDEO]: '智能多帧'
         };
 
         const baseX = x !== undefined ? x : (-pan.x + window.innerWidth / 2) / scale - 210;
@@ -673,7 +711,8 @@ export default function StudioTab() {
         const [rw, rh] = (defaults.aspectRatio || '16:9').split(':').map(Number);
         const nodeHeight = type === NodeType.AUDIO_GENERATOR ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
             type === NodeType.PROMPT_INPUT ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
-                (nodeWidth * rh / rw);
+                type === NodeType.MULTI_FRAME_VIDEO ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
+                    (nodeWidth * rh / rw);
 
         const { x: finalX, y: finalY } = findNonOverlappingPosition(safeBaseX, safeBaseY, nodeWidth, nodeHeight, nodesRef.current, 'down');
 
@@ -820,28 +859,123 @@ export default function StudioTab() {
         setSelectedNodeIds([newNode.id]);
     }, [pan, scale, saveHistory, isPointOnEmptyCanvas]);
 
-    const handleMultiFrameGenerate = async (frames: SmartSequenceItem[], config: any): Promise<string> => {
-        try {
-            // 使用 Vidu 智能多帧 API
-            console.log('[Vidu MultiFrame] Generating with config:', config);
-            const result = await generateViduMultiFrame(frames, config);
+    // 批量上传素材：创建多个纵向排布的节点并用分组框包裹
+    const handleBatchUpload = useCallback(async (files: File[], type: 'image' | 'video', sourceNodeId: string) => {
+        if (files.length === 0) return;
 
-            if (!result.success) {
-                throw new Error(result.error || 'Vidu 生成失败');
+        saveHistory();
+
+        const sourceNode = nodesRef.current.find(n => n.id === sourceNodeId);
+        if (!sourceNode) return;
+
+        // 节点参数
+        const nodeWidth = 420;
+        const defaultHeight = type === 'image' ? 315 : 236; // 4:3 for images, 16:9 for videos
+        const verticalGap = 24; // 节点间垂直间距
+        const groupPadding = 30; // 分组框内边距
+
+        // 计算起始位置（在源节点右侧）
+        const startX = sourceNode.x + (sourceNode.width || nodeWidth) + 80;
+        let currentY = sourceNode.y;
+
+        const newNodes: AppNode[] = [];
+        const newNodeIds: string[] = [];
+
+        // 处理每个文件
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const nodeId = `n-${Date.now()}-${i}-${Math.floor(Math.random() * 1000)}`;
+            newNodeIds.push(nodeId);
+
+            if (type === 'image') {
+                // 读取图片并获取尺寸
+                const base64 = await new Promise<string>((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target?.result as string);
+                    reader.readAsDataURL(file);
+                });
+
+                // 获取图片尺寸
+                const dimensions = await new Promise<{ width: number; height: number; aspectRatio: string }>((resolve) => {
+                    const img = new window.Image();
+                    img.onload = () => {
+                        const ratio = img.width / img.height;
+                        let aspectRatio = '1:1';
+                        if (ratio > 1.6) aspectRatio = '16:9';
+                        else if (ratio > 1.2) aspectRatio = '4:3';
+                        else if (ratio < 0.625) aspectRatio = '9:16';
+                        else if (ratio < 0.83) aspectRatio = '3:4';
+                        const nodeHeight = nodeWidth * img.height / img.width;
+                        resolve({ width: nodeWidth, height: nodeHeight, aspectRatio });
+                    };
+                    img.src = base64;
+                });
+
+                const newNode: AppNode = {
+                    id: nodeId,
+                    type: NodeType.IMAGE_ASSET,
+                    x: startX,
+                    y: currentY,
+                    width: nodeWidth,
+                    height: dimensions.height,
+                    title: file.name.replace(/\.[^/.]+$/, '').slice(0, 20) || `图片 ${i + 1}`,
+                    status: NodeStatus.SUCCESS,
+                    data: { image: base64, aspectRatio: dimensions.aspectRatio },
+                    inputs: []
+                };
+                newNodes.push(newNode);
+                currentY += dimensions.height + verticalGap;
+            } else {
+                // 视频文件
+                const url = URL.createObjectURL(file);
+                const newNode: AppNode = {
+                    id: nodeId,
+                    type: NodeType.VIDEO_ASSET,
+                    x: startX,
+                    y: currentY,
+                    width: nodeWidth,
+                    height: defaultHeight,
+                    title: file.name.replace(/\.[^/.]+$/, '').slice(0, 20) || `视频 ${i + 1}`,
+                    status: NodeStatus.SUCCESS,
+                    data: { videoUri: url },
+                    inputs: []
+                };
+                newNodes.push(newNode);
+                currentY += defaultHeight + verticalGap;
             }
-
-            if (!result.videoUrl) {
-                throw new Error('Vidu 未返回视频URL');
-            }
-
-            handleAssetGenerated('video', result.videoUrl, 'Vidu 智能多帧');
-            return result.videoUrl;
-        } catch (e: any) {
-            console.error('[Vidu MultiFrame] Generation failed:', e);
-            throw new Error(e.message || "智能多帧生成失败");
         }
-    };
 
+        // 计算分组框尺寸
+        const totalHeight = currentY - sourceNode.y - verticalGap; // 减去最后一个间距
+        const groupWidth = nodeWidth + groupPadding * 2;
+        const groupHeight = totalHeight + groupPadding * 2;
+
+        // 创建分组框
+        const newGroup: Group = {
+            id: `g-${Date.now()}`,
+            title: type === 'image' ? '批量图片' : '批量视频',
+            x: startX - groupPadding,
+            y: sourceNode.y - groupPadding,
+            width: groupWidth,
+            height: groupHeight,
+            hasOutputPort: true, // 启用右侧连接点
+            nodeIds: newNodeIds
+        };
+
+        // 更新状态
+        setNodes(prev => [...prev, ...newNodes]);
+        setGroups(prev => [...prev, newGroup]);
+
+        // 删除原始空节点（如果它是空的）
+        const originalNode = nodesRef.current.find(n => n.id === sourceNodeId);
+        if (originalNode && !originalNode.data.image && !originalNode.data.videoUri) {
+            setNodes(prev => prev.filter(n => n.id !== sourceNodeId));
+        }
+
+        // 选中新创建的分组
+        setSelectedGroupIds([newGroup.id]);
+        setSelectedNodeIds([]);
+    }, [saveHistory]);
 
     // 使用 ref 存储最新的 scale 和 pan 值，避免闭包问题
     const scaleRef = useRef(scale);
@@ -892,7 +1026,8 @@ export default function StudioTab() {
     }, [handleWheel]);
 
     const handleCanvasMouseDown = (e: React.MouseEvent) => {
-        if (contextMenu) setContextMenu(null); setSelectedGroupId(null);
+        if (contextMenu) setContextMenu(null);
+        setSelectedGroupIds([]);
         // 点击画布空白区域时，让当前聚焦的输入框失去焦点
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 
@@ -959,7 +1094,9 @@ export default function StudioTab() {
             }
 
             if (draggingNodeId && dragNodeRef.current && dragNodeRef.current.id === draggingNodeId) {
-                const { startX, startY, mouseStartX, mouseStartY, nodeWidth, nodeHeight, otherSelectedNodes } = dragNodeRef.current;
+                const { startX, startY, mouseStartX, mouseStartY, nodeWidth, nodeHeight, otherSelectedNodes, isCopyDrag } = dragNodeRef.current;
+                // 复制拖拽时显示复制光标
+                document.body.style.cursor = isCopyDrag ? 'copy' : '';
                 let dx = (clientX - mouseStartX) / scale;
                 let dy = (clientY - mouseStartY) / scale;
                 let proposedX = startX + dx;
@@ -1003,29 +1140,78 @@ export default function StudioTab() {
                 dragNodeRef.current.currentDx = actualDx;
                 dragNodeRef.current.currentDy = actualDy;
 
-                // 直接操作 DOM，绕过 React 渲染 ⚡
-                const mainEl = nodeRefsMap.current.get(draggingNodeId);
-                if (mainEl) {
-                    mainEl.style.transform = `translate(${proposedX}px, ${proposedY}px)`;
-                }
-                // 更新拖拽位置 ref（用于连接线计算）
-                dragPositionsRef.current.set(draggingNodeId, { x: proposedX, y: proposedY });
-                const affectedNodeIds = [draggingNodeId];
-
-                // 同步移动其他选中节点
-                otherSelectedNodes?.forEach(on => {
-                    const newX = on.startX + actualDx;
-                    const newY = on.startY + actualDy;
-                    const el = nodeRefsMap.current.get(on.id);
-                    if (el) {
-                        el.style.transform = `translate(${newX}px, ${newY}px)`;
+                if (isCopyDrag) {
+                    // 复制拖拽：原节点不动，显示半透明预览
+                    const mainEl = nodeRefsMap.current.get(draggingNodeId);
+                    if (mainEl) {
+                        mainEl.style.opacity = '0.5'; // 原节点变半透明
                     }
-                    dragPositionsRef.current.set(on.id, { x: newX, y: newY });
-                    affectedNodeIds.push(on.id);
-                });
+                    // 其他选中节点也变半透明
+                    otherSelectedNodes?.forEach(on => {
+                        const el = nodeRefsMap.current.get(on.id);
+                        if (el) el.style.opacity = '0.5';
+                    });
+                    // 更新复制预览位置
+                    const previewNodes = [{ x: proposedX, y: proposedY, width: nodeWidth, height: nodeHeight }];
+                    otherSelectedNodes?.forEach(on => {
+                        const originalNode = nodesRef.current.find(n => n.id === on.id);
+                        if (originalNode) {
+                            previewNodes.push({
+                                x: on.startX + actualDx,
+                                y: on.startY + actualDy,
+                                width: originalNode.width || 420,
+                                height: originalNode.height || 320
+                            });
+                        }
+                    });
+                    setCopyDragPreview({ nodes: previewNodes });
+                } else {
+                    // 普通拖拽：直接操作 DOM，绕过 React 渲染 ⚡
+                    const mainEl = nodeRefsMap.current.get(draggingNodeId);
+                    if (mainEl) {
+                        mainEl.style.transform = `translate(${proposedX}px, ${proposedY}px)`;
+                    }
+                    // 更新拖拽位置 ref（用于连接线计算）
+                    dragPositionsRef.current.set(draggingNodeId, { x: proposedX, y: proposedY });
+                    const affectedNodeIds = [draggingNodeId];
 
-                // 更新相关连接线 ⚡
-                updateConnectionPaths(affectedNodeIds);
+                    // 同步移动其他选中节点
+                    otherSelectedNodes?.forEach(on => {
+                        const newX = on.startX + actualDx;
+                        const newY = on.startY + actualDy;
+                        const el = nodeRefsMap.current.get(on.id);
+                        if (el) {
+                            el.style.transform = `translate(${newX}px, ${newY}px)`;
+                        }
+                        dragPositionsRef.current.set(on.id, { x: newX, y: newY });
+                        affectedNodeIds.push(on.id);
+                    });
+
+                    // 同步移动选中的分组及其内部节点 ⚡
+                    dragNodeRef.current.selectedGroups?.forEach(sg => {
+                        const newX = sg.startX + actualDx;
+                        const newY = sg.startY + actualDy;
+                        const groupEl = groupRefsMap.current.get(sg.id);
+                        if (groupEl) {
+                            groupEl.style.left = `${newX}px`;
+                            groupEl.style.top = `${newY}px`;
+                        }
+                        // 移动分组内部的节点
+                        sg.childNodes?.forEach(cn => {
+                            const childX = cn.startX + actualDx;
+                            const childY = cn.startY + actualDy;
+                            const childEl = nodeRefsMap.current.get(cn.id);
+                            if (childEl) {
+                                childEl.style.transform = `translate(${childX}px, ${childY}px)`;
+                            }
+                            dragPositionsRef.current.set(cn.id, { x: childX, y: childY });
+                            affectedNodeIds.push(cn.id);
+                        });
+                    });
+
+                    // 更新相关连接线 ⚡
+                    updateConnectionPaths(affectedNodeIds);
+                }
                 // 不调用 setNodes()！
 
             } else if (draggingNodeId) {
@@ -1051,8 +1237,26 @@ export default function StudioTab() {
                     setNodes(prev => prev.map(n => n.id === resizingNodeId ? { ...n, width: newWidth, height: newHeight } : n));
                 }
             }
+
+            // 分组调整尺寸 - 直接操作 DOM ⚡
+            if (resizeGroupRef.current && resizingGroupId) {
+                const { id, initialWidth, initialHeight, startX, startY } = resizeGroupRef.current;
+                const dx = (clientX - startX) / scale;
+                const dy = (clientY - startY) / scale;
+                const newWidth = Math.max(200, initialWidth + dx);
+                const newHeight = Math.max(150, initialHeight + dy);
+                // 直接操作 DOM，不触发 React 渲染
+                const groupEl = groupRefsMap.current.get(id);
+                if (groupEl) {
+                    groupEl.style.width = `${newWidth}px`;
+                    groupEl.style.height = `${newHeight}px`;
+                }
+                // 缓存当前尺寸用于 mouseup 提交
+                resizeGroupRef.current.currentWidth = newWidth;
+                resizeGroupRef.current.currentHeight = newHeight;
+            }
         });
-    }, [selectionRect, isDraggingCanvas, draggingNodeId, resizingNodeId, initialSize, resizeStartPos, scale, lastMousePos]);
+    }, [selectionRect, isDraggingCanvas, draggingNodeId, resizingNodeId, resizingGroupId, initialSize, resizeStartPos, scale, lastMousePos]);
 
     const handleGlobalMouseUp = useCallback((e: MouseEvent) => {
         if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
@@ -1063,41 +1267,166 @@ export default function StudioTab() {
             const h = Math.abs(selectionRect.currentY - selectionRect.startY);
             if (w > 10 && h > 10) {
                 const rect = { x: (x - pan.x) / scale, y: (y - pan.y) / scale, w: w / scale, h: h / scale };
+
+                // 检查是否有分组被框选（框选区域与分组有足够重叠）
+                const selectedGroups = groupsRef.current.filter(g => {
+                    const overlapX = Math.max(0, Math.min(rect.x + rect.w, g.x + g.width) - Math.max(rect.x, g.x));
+                    const overlapY = Math.max(0, Math.min(rect.y + rect.h, g.y + g.height) - Math.max(rect.y, g.y));
+                    const overlapArea = overlapX * overlapY;
+                    const groupArea = g.width * g.height;
+                    return overlapArea > groupArea * 0.3;
+                });
+
                 // 选中框选区域内的节点（以节点中心判断）
-                const enclosed = nodesRef.current.filter(n => {
+                // 排除已在选中分组内的节点（避免重复移动）
+                const enclosedNodes = nodesRef.current.filter(n => {
                     const cx = n.x + (n.width || 420) / 2;
                     const cy = n.y + 160;
-                    return cx > rect.x && cx < rect.x + rect.w && cy > rect.y && cy < rect.y + rect.h;
+                    const inRect = cx > rect.x && cx < rect.x + rect.w && cy > rect.y && cy < rect.y + rect.h;
+                    if (!inRect) return false;
+                    // 检查节点是否在选中的分组内
+                    const inSelectedGroup = selectedGroups.some(g =>
+                        cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height
+                    );
+                    return !inSelectedGroup; // 只选中不在分组内的节点
                 });
-                // 只选中节点，不自动创建分组
-                if (enclosed.length > 0) {
-                    setSelectedNodeIds(enclosed.map(n => n.id));
-                } else {
-                    setSelectedNodeIds([]);
-                }
+
+                // 同时设置选中的分组和节点
+                setSelectedGroupIds(selectedGroups.map(g => g.id));
+                setSelectedNodeIds(enclosedNodes.map(n => n.id));
             }
             setSelectionRect(null);
         }
 
         // 拖拽结束：一次性提交节点位置到 state ⚡
         if (draggingNodeId && dragNodeRef.current && dragNodeRef.current.currentX !== undefined) {
-            const { currentX, currentY, currentDx, currentDy, otherSelectedNodes } = dragNodeRef.current;
-            setNodes(prev => prev.map(n => {
-                if (n.id === draggingNodeId) {
-                    return { ...n, x: currentX!, y: currentY! };
+            const { currentX, currentY, currentDx, currentDy, otherSelectedNodes, isCopyDrag, startX, startY } = dragNodeRef.current;
+
+            // 检测是否实际发生了移动（防止点击时复制）
+            const hasMoved = Math.abs((currentX || startX) - startX) > 5 || Math.abs((currentY || startY) - startY) > 5;
+
+            // 恢复节点透明度（复制拖拽时会变半透明）
+            const mainEl = nodeRefsMap.current.get(draggingNodeId);
+            if (mainEl) mainEl.style.opacity = '';
+            otherSelectedNodes?.forEach(on => {
+                const el = nodeRefsMap.current.get(on.id);
+                if (el) el.style.opacity = '';
+            });
+            // 清除复制预览
+            setCopyDragPreview(null);
+
+            if (isCopyDrag && hasMoved) {
+                // Cmd/Ctrl + 拖拽：复制节点到新位置
+                const nodesToCopy = [draggingNodeId, ...(otherSelectedNodes?.map(n => n.id) || [])];
+                const newNodes: AppNode[] = [];
+                const idMapping: Record<string, string> = {}; // 旧ID -> 新ID 映射
+
+                nodesToCopy.forEach((nodeId, index) => {
+                    const originalNode = nodesRef.current.find(n => n.id === nodeId);
+                    if (!originalNode) return;
+
+                    const newId = `n-${Date.now()}-${index}-${Math.floor(Math.random() * 1000)}`;
+                    idMapping[nodeId] = newId;
+
+                    // 计算新位置
+                    let newX: number, newY: number;
+                    if (nodeId === draggingNodeId) {
+                        newX = currentX!;
+                        newY = currentY!;
+                    } else {
+                        const otherNode = otherSelectedNodes?.find(on => on.id === nodeId);
+                        if (otherNode && currentDx !== undefined && currentDy !== undefined) {
+                            newX = otherNode.startX + currentDx;
+                            newY = otherNode.startY + currentDy;
+                        } else {
+                            newX = originalNode.x;
+                            newY = originalNode.y;
+                        }
+                    }
+
+                    // 继承外部上游连接（不在复制集合中的上游节点）
+                    const externalInputs = originalNode.inputs.filter(inputId => !nodesToCopy.includes(inputId));
+
+                    newNodes.push({
+                        ...originalNode,
+                        id: newId,
+                        x: newX,
+                        y: newY,
+                        title: `${originalNode.title} 副本`,
+                        inputs: externalInputs // 继承外部上游连接
+                    });
+                });
+
+                // 创建外部上游连接的 Connection 对象
+                const newConnections: Connection[] = [];
+                newNodes.forEach(newNode => {
+                    newNode.inputs.forEach(inputId => {
+                        newConnections.push({ from: inputId, to: newNode.id });
+                    });
+                });
+
+                setNodes(prev => [...prev, ...newNodes]);
+                if (newConnections.length > 0) {
+                    setConnections(prev => [...prev, ...newConnections]);
                 }
-                const otherNode = otherSelectedNodes?.find(on => on.id === n.id);
-                if (otherNode && currentDx !== undefined && currentDy !== undefined) {
-                    return { ...n, x: otherNode.startX + currentDx, y: otherNode.startY + currentDy };
+                // 选中新复制的节点
+                setSelectedNodeIds(newNodes.map(n => n.id));
+            } else {
+                // 普通拖拽：移动节点（包括选中分组的内部节点）
+                const selectedGroupsToMove = dragNodeRef.current?.selectedGroups || [];
+                const allChildNodes = selectedGroupsToMove.flatMap(sg => sg.childNodes || []);
+
+                setNodes(prev => prev.map(n => {
+                    if (n.id === draggingNodeId) {
+                        return { ...n, x: currentX!, y: currentY! };
+                    }
+                    const otherNode = otherSelectedNodes?.find(on => on.id === n.id);
+                    if (otherNode && currentDx !== undefined && currentDy !== undefined) {
+                        return { ...n, x: otherNode.startX + currentDx, y: otherNode.startY + currentDy };
+                    }
+                    // 分组内部节点
+                    const childNode = allChildNodes.find(cn => cn.id === n.id);
+                    if (childNode && currentDx !== undefined && currentDy !== undefined) {
+                        return { ...n, x: childNode.startX + currentDx, y: childNode.startY + currentDy };
+                    }
+                    return n;
+                }));
+
+                // 同步提交选中分组的位置变更
+                if (selectedGroupsToMove.length > 0 && currentDx !== undefined && currentDy !== undefined) {
+                    setGroups(prev => prev.map(g => {
+                        const sg = selectedGroupsToMove.find(sg => sg.id === g.id);
+                        if (sg) {
+                            return { ...g, x: sg.startX + currentDx, y: sg.startY + currentDy };
+                        }
+                        return g;
+                    }));
                 }
-                return n;
-            }));
+            }
         }
 
         // 清除拖拽位置缓存
         dragPositionsRef.current.clear();
 
-        if (draggingNodeId || resizingNodeId || dragGroupRef.current) saveHistory();
+        if (draggingNodeId || resizingNodeId || dragGroupRef.current || resizeGroupRef.current) saveHistory();
+
+        // 分组调整尺寸完成后，提交最终尺寸到 state 并更新 nodeIds
+        if (resizeGroupRef.current) {
+            const { id: groupId, currentWidth, currentHeight } = resizeGroupRef.current;
+            setGroups(prev => prev.map(g => {
+                if (g.id !== groupId) return g;
+                const newWidth = currentWidth ?? g.width;
+                const newHeight = currentHeight ?? g.height;
+                // 找出在分组范围内的节点（以节点中心判断）
+                const enclosedNodeIds = nodesRef.current.filter(n => {
+                    const b = getNodeBounds(n);
+                    const cx = b.x + b.width / 2;
+                    const cy = b.y + b.height / 2;
+                    return cx > g.x && cx < g.x + newWidth && cy > g.y && cy < g.y + newHeight;
+                }).map(n => n.id);
+                return { ...g, width: newWidth, height: newHeight, nodeIds: enclosedNodeIds };
+            }));
+        }
 
         // 检查是否从有输出能力的节点的输出端口开始拖拽并释放到空白区域
         // 如果是，弹出节点选择框（继续编辑功能）
@@ -1122,11 +1451,12 @@ export default function StudioTab() {
         // 如果是，弹出上游节点选择框（素材/描述）
         if (connStart && connStart.portType === 'input') {
             const targetNode = nodesRef.current.find(n => n.id === connStart.id);
-            // 对生成节点（图像/视频）和提示词节点生效
+            // 对生成节点（图像/视频/多帧视频）和提示词节点生效
             if (targetNode && (
                 targetNode.type === NodeType.IMAGE_GENERATOR ||
                 targetNode.type === NodeType.VIDEO_GENERATOR ||
                 targetNode.type === NodeType.VIDEO_FACTORY ||
+                targetNode.type === NodeType.MULTI_FRAME_VIDEO ||
                 targetNode.type === NodeType.PROMPT_INPUT
             )) {
                 const canvasX = (e.clientX - pan.x) / scale;
@@ -1136,9 +1466,11 @@ export default function StudioTab() {
             }
         }
 
+        // 清除复制光标
+        document.body.style.cursor = '';
         setIsDraggingCanvas(false); setDraggingNodeId(null); setDraggingNodeParentGroupId(null); setDraggingGroup(null); setResizingGroupId(null); setActiveGroupNodeIds([]); setResizingNodeId(null); setInitialSize(null); setResizeStartPos(null); setConnectionStart(null);
-        dragNodeRef.current = null; resizeContextRef.current = null; dragGroupRef.current = null;
-    }, [selectionRect, pan, scale, saveHistory, draggingNodeId, resizingNodeId]);
+        dragNodeRef.current = null; resizeContextRef.current = null; dragGroupRef.current = null; resizeGroupRef.current = null;
+    }, [selectionRect, pan, scale, saveHistory, draggingNodeId, resizingNodeId, resizingGroupId]);
 
     useEffect(() => { window.addEventListener('mousemove', handleGlobalMouseMove); window.addEventListener('mouseup', handleGlobalMouseUp); return () => { window.removeEventListener('mousemove', handleGlobalMouseMove); window.removeEventListener('mouseup', handleGlobalMouseUp); }; }, [handleGlobalMouseMove, handleGlobalMouseUp]);
 
@@ -1146,7 +1478,15 @@ export default function StudioTab() {
         setNodes(prev => {
             const newNodes = prev.map(n => {
                 if (n.id === id) {
-                    const updated = { ...n, data: { ...n.data, ...data }, title: title || n.title };
+                    // 深度合并 firstLastFrameData（避免快速连续上传时丢失数据）
+                    const mergedData = { ...n.data, ...data };
+                    if (data.firstLastFrameData) {
+                        mergedData.firstLastFrameData = {
+                            ...n.data.firstLastFrameData,
+                            ...data.firstLastFrameData
+                        };
+                    }
+                    const updated = { ...n, data: mergedData, title: title || n.title };
                     if (size) { if (size.width) updated.width = size.width; if (size.height) updated.height = size.height; }
 
                     if (data.image) handleAssetGenerated('image', data.image, updated.title);
@@ -1473,11 +1813,13 @@ export default function StudioTab() {
                             aspectRatio: usedAspectRatio,
                             count: node.data.videoCount || 1,
                             generationMode: strategy.generationMode,
-                            resolution: node.data.resolution
+                            resolution: node.data.resolution,
+                            duration: node.data.duration  // 视频时长
                         },
                         strategy.inputImageForGeneration,
                         strategy.videoInput,
-                        strategy.referenceImages
+                        strategy.referenceImages,
+                        strategy.imageRoles  // 图片角色（首尾帧）
                     );
 
                     if (shouldCreateNewNode && factoryNodeId) {
@@ -1585,11 +1927,13 @@ export default function StudioTab() {
                             aspectRatio: usedAspectRatio,
                             count: node.data.videoCount || 1,
                             generationMode: strategy.generationMode,
-                            resolution: node.data.resolution
+                            resolution: node.data.resolution,
+                            duration: node.data.duration  // 视频时长
                         },
                         strategy.inputImageForGeneration,
                         videoInput || strategy.videoInput,
-                        strategy.referenceImages
+                        strategy.referenceImages,
+                        strategy.imageRoles  // 图片角色（首尾帧）
                     );
 
                     if (shouldCreateNewNode && newFactoryNodeId) {
@@ -1714,6 +2058,82 @@ export default function StudioTab() {
                 const img = node.data.image || inputImages[0];
                 const res = await editImageWithText(img, prompt, node.data.model || 'gemini-2.5-flash-image');
                 handleNodeUpdate(id, { image: res });
+
+            } else if (node.type === NodeType.MULTI_FRAME_VIDEO) {
+                // 智能多帧视频生成
+                const frames = node.data.multiFrameData?.frames || [];
+                if (frames.length < 2) {
+                    throw new Error('智能多帧至少需要2张关键帧');
+                }
+
+                const viduConfig: ViduMultiFrameConfig = {
+                    model: node.data.multiFrameData?.viduModel || 'viduq2-turbo',
+                    resolution: node.data.multiFrameData?.viduResolution || '720p',
+                };
+
+                // 调用 Vidu API 生成视频
+                const result = await generateViduMultiFrame(frames, viduConfig);
+
+                if (!result.success) {
+                    throw new Error(result.error || 'Vidu 生成失败');
+                }
+
+                // 如果返回 taskId，需要轮询查询结果
+                if (result.taskId && !result.videoUrl) {
+                    // 保存 taskId 到节点数据
+                    handleNodeUpdate(id, {
+                        multiFrameData: {
+                            ...node.data.multiFrameData,
+                            taskId: result.taskId,
+                        },
+                        progress: '正在生成视频...',
+                    });
+
+                    // 轮询查询任务状态
+                    const maxAttempts = 120; // 最多查询 120 次（约 10 分钟）
+                    let attempts = 0;
+                    let finalResult = result;
+
+                    while (attempts < maxAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, 5000)); // 每 5 秒查询一次
+                        attempts++;
+
+                        const queryResult = await queryViduTask(result.taskId);
+
+                        if (!queryResult.success) {
+                            throw new Error(queryResult.error || '查询任务状态失败');
+                        }
+
+                        if (queryResult.videoUrl) {
+                            finalResult = queryResult;
+                            break;
+                        }
+
+                        if (queryResult.state === 'failed') {
+                            throw new Error('视频生成失败');
+                        }
+
+                        // 更新进度
+                        handleNodeUpdate(id, {
+                            progress: `生成中... (${attempts * 5}s)`,
+                        });
+                    }
+
+                    if (!finalResult.videoUrl) {
+                        throw new Error('生成超时，请稍后重试');
+                    }
+
+                    // 生成完成，更新节点
+                    handleNodeUpdate(id, {
+                        videoUri: finalResult.videoUrl,
+                        progress: undefined,
+                    });
+                } else if (result.videoUrl) {
+                    // 直接返回视频 URL
+                    handleNodeUpdate(id, {
+                        videoUri: result.videoUrl,
+                    });
+                }
             }
             setNodes(p => p.map(n => n.id === id ? { ...n, status: NodeStatus.SUCCESS } : n));
         } catch (e: any) {
@@ -1799,7 +2219,7 @@ export default function StudioTab() {
         setConnections([]);
         setGroups([]);
         setSelectedNodeIds([]);
-        setSelectedGroupId(null);
+        setSelectedGroupIds([]);
         // 重置视口
         setPan({ x: 0, y: 0 });
         setScale(1);
@@ -1821,7 +2241,7 @@ export default function StudioTab() {
             setGroups(JSON.parse(JSON.stringify(canvas.groups)));
             setCurrentCanvasId(id);
             setSelectedNodeIds([]);
-            setSelectedGroupId(null);
+            setSelectedGroupIds([]);
 
             // 恢复视口状态
             if (canvas.pan && canvas.scale) {
@@ -1897,7 +2317,7 @@ export default function StudioTab() {
             return newCanvases;
         });
         setSelectedNodeIds([]);
-        setSelectedGroupId(null);
+        setSelectedGroupIds([]);
     }, [canvases, currentCanvasId]);
 
     const renameCanvas = useCallback((id: string, newTitle: string) => {
@@ -1921,8 +2341,43 @@ export default function StudioTab() {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); setSelectedNodeIds(nodesRef.current.map(n => n.id)); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') { const lastSelected = selectedNodeIds[selectedNodeIds.length - 1]; if (lastSelected) { const nodeToCopy = nodesRef.current.find(n => n.id === lastSelected); if (nodeToCopy) { e.preventDefault(); setClipboard(JSON.parse(JSON.stringify(nodeToCopy))); } } return; }
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') { if (clipboard) { e.preventDefault(); saveHistory(); const newNode: AppNode = { ...clipboard, id: `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`, x: clipboard.x + 50, y: clipboard.y + 50, status: NodeStatus.IDLE, inputs: [] }; setNodes(prev => [...prev, newNode]); setSelectedNodeIds([newNode.id]); } return; }
-            if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedGroupId) { saveHistory(); setGroups(prev => prev.filter(g => g.id !== selectedGroupId)); setSelectedGroupId(null); return; } if (selectedNodeIds.length > 0) { deleteNodes(selectedNodeIds); } }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+                if (clipboard) {
+                    e.preventDefault();
+                    saveHistory();
+                    const newNodeId = `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                    // 继承原节点的输入连接
+                    const inheritedInputs = clipboard.inputs || [];
+                    const newNode: AppNode = {
+                        ...clipboard,
+                        id: newNodeId,
+                        x: clipboard.x + 50,
+                        y: clipboard.y + 50,
+                        status: NodeStatus.IDLE,
+                        inputs: inheritedInputs
+                    };
+                    setNodes(prev => [...prev, newNode]);
+                    // 为继承的输入创建新的连接
+                    if (inheritedInputs.length > 0) {
+                        const newConnections = inheritedInputs.map(inputId => ({ from: inputId, to: newNodeId }));
+                        setConnections(prev => [...prev, ...newConnections]);
+                    }
+                    setSelectedNodeIds([newNode.id]);
+                }
+                return;
+            }
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                if (selectedGroupIds.length > 0 || selectedNodeIds.length > 0) {
+                    saveHistory();
+                    if (selectedGroupIds.length > 0) {
+                        setGroups(prev => prev.filter(g => !selectedGroupIds.includes(g.id)));
+                        setSelectedGroupIds([]);
+                    }
+                    if (selectedNodeIds.length > 0) {
+                        deleteNodes(selectedNodeIds);
+                    }
+                }
+            }
         };
         const handleKeyDownSpace = (e: KeyboardEvent) => {
             if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
@@ -1939,7 +2394,7 @@ export default function StudioTab() {
         };
         window.addEventListener('keydown', handleKeyDown); window.addEventListener('keydown', handleKeyDownSpace); window.addEventListener('keyup', handleKeyUpSpace);
         return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keydown', handleKeyDownSpace); window.removeEventListener('keyup', handleKeyUpSpace); };
-    }, [selectedWorkflowId, selectedNodeIds, selectedGroupId, deleteNodes, undo, saveHistory, clipboard]);
+    }, [selectedWorkflowId, selectedNodeIds, selectedGroupIds, deleteNodes, undo, saveHistory, clipboard]);
 
     const handleCanvasDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
     const handleCanvasDrop = (e: React.DragEvent) => {
@@ -2137,10 +2592,19 @@ export default function StudioTab() {
                     {/* Groups Layer */}
                     {groups.map(g => (
                         <div
-                            key={g.id} className={`absolute rounded-[32px] border transition-all ${(draggingGroup?.id === g.id || draggingNodeParentGroupId === g.id) ? 'duration-0' : 'duration-300'} ${selectedGroupId === g.id ? 'border-blue-500/50 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`} style={{ left: g.x, top: g.y, width: g.width, height: g.height }}
+                            key={g.id}
+                            ref={(el) => { if (el) groupRefsMap.current.set(g.id, el); else groupRefsMap.current.delete(g.id); }}
+                            className={`absolute rounded-[32px] border transition-all ${(draggingGroup?.id === g.id || draggingNodeParentGroupId === g.id || resizingGroupId === g.id) ? 'duration-0' : 'duration-300'} ${selectedGroupIds.includes(g.id) ? 'border-blue-500/50 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`}
+                            style={{ left: g.x, top: g.y, width: g.width, height: g.height }}
                             onMouseDown={(e) => {
-                                e.stopPropagation(); e.preventDefault(); // 防止拖拽选中文本
-                                setSelectedGroupId(g.id);
+                                // 检查是否点击在连接点上
+                                const target = e.target as HTMLElement;
+                                if (target.closest('[data-group-port]')) return;
+                                if (target.closest('[data-resize-handle]')) return;
+                                e.stopPropagation(); e.preventDefault();
+                                // 点击分组：选中分组，清除节点选择
+                                setSelectedGroupIds([g.id]);
+                                setSelectedNodeIds([]);
                                 const childNodes = nodes.filter(n => { const b = getNodeBounds(n); const cx = b.x + b.width / 2; const cy = b.y + b.height / 2; return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height; }).map(n => ({ id: n.id, startX: n.x, startY: n.y }));
                                 dragGroupRef.current = { id: g.id, startX: g.x, startY: g.y, mouseStartX: e.clientX, mouseStartY: e.clientY, childNodes };
                                 setActiveGroupNodeIds(childNodes.map(c => c.id)); setDraggingGroup({ id: g.id });
@@ -2148,6 +2612,90 @@ export default function StudioTab() {
                             onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: g.id }); setContextMenuTarget({ type: 'group', id: g.id }); }}
                         >
                             <div className="absolute -top-8 left-4 text-xs font-bold text-slate-400 uppercase tracking-widest">{g.title}</div>
+                            {/* 分组右侧连接点 - 仅当内容全部为图片素材时显示 */}
+                            {(() => {
+                                // 找出分组内的所有节点
+                                const groupNodes = nodes.filter(n => {
+                                    const b = getNodeBounds(n);
+                                    const cx = b.x + b.width / 2;
+                                    const cy = b.y + b.height / 2;
+                                    return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height;
+                                });
+                                // 仅当有节点且全部为图片素材时显示连接点
+                                const shouldShowPort = groupNodes.length > 0 && groupNodes.every(n => n.type === NodeType.IMAGE_ASSET);
+                                if (!shouldShowPort) return null;
+
+                                const inverseScale = 1 / Math.max(0.1, scale);
+                                return (
+                                    <div
+                                        data-group-port="output"
+                                        className={`absolute rounded-full border bg-white dark:bg-slate-800 cursor-crosshair flex items-center justify-center transition-all duration-300 shadow-md z-50
+                                            w-5 h-5 border-blue-400 hover:scale-150 hover:bg-blue-500 hover:border-blue-500 group/output
+                                            ${connectionStart ? 'ring-2 ring-purple-400 animate-pulse' : ''}`}
+                                        style={{
+                                            right: `${-12 * inverseScale}px`,
+                                            top: '50%',
+                                            transform: `translateY(-50%) scale(${inverseScale})`,
+                                            transformOrigin: 'center center'
+                                        }}
+                                        onMouseDown={(e) => {
+                                            e.stopPropagation();
+                                            e.preventDefault();
+                                            // 开始从分组拖拽连接线
+                                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                            const centerX = rect.left + rect.width / 2;
+                                            const centerY = rect.top + rect.height / 2;
+                                            setConnectionStart({
+                                                id: `group:${g.id}`,
+                                                portType: 'output',
+                                                screenX: centerX,
+                                                screenY: centerY
+                                            });
+                                        }}
+                                        onMouseUp={(e) => {
+                                            e.stopPropagation();
+                                            // 如果有连接正在进行，完成连接
+                                            if (connectionStart && connectionStart.id !== `group:${g.id}`) {
+                                                // 分组只能作为输出端，不能接收连接
+                                            }
+                                            setConnectionStart(null);
+                                        }}
+                                        onDoubleClick={(e) => {
+                                            e.stopPropagation();
+                                            // 双击分组连接点，弹出下游节点选择菜单
+                                            const canvasX = (e.clientX - pan.x) / scale;
+                                            const canvasY = (e.clientY - pan.y) / scale;
+                                            setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: g.id });
+                                            setContextMenuTarget({ type: 'group-output-action', groupId: g.id, canvasX, canvasY });
+                                        }}
+                                        title="双击或拖拽创建下游节点"
+                                    >
+                                        <Plus size={12} strokeWidth={3} className="text-blue-400 group-hover/output:text-white transition-colors" />
+                                    </div>
+                                );
+                            })()}
+                            {/* 分组右下角调整尺寸手柄 */}
+                            <div
+                                data-resize-handle
+                                className="absolute w-5 h-5 cursor-se-resize opacity-0 hover:opacity-100 transition-opacity"
+                                style={{ right: 4, bottom: 4, zIndex: 100 }}
+                                onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    setResizingGroupId(g.id);
+                                    resizeGroupRef.current = {
+                                        id: g.id,
+                                        initialWidth: g.width,
+                                        initialHeight: g.height,
+                                        startX: e.clientX,
+                                        startY: e.clientY
+                                    };
+                                }}
+                            >
+                                <svg viewBox="0 0 20 20" className="w-full h-full text-slate-400 dark:text-slate-500">
+                                    <path d="M17 17L7 17M17 17L17 7M17 17L10 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                </svg>
+                            </div>
                         </div>
                     ))}
 
@@ -2156,10 +2704,29 @@ export default function StudioTab() {
                         {connections.map((conn) => {
                             const f = nodes.find(n => n.id === conn.from), t = nodes.find(n => n.id === conn.to);
                             if (!f || !t) return null;
+
+                            // 检查源节点是否在有 hasOutputPort 的分组中
+                            const sourceGroup = groups.find(g => {
+                                if (!g.hasOutputPort) return false;
+                                const cx = f.x + (f.width || 420) / 2;
+                                const cy = f.y + (f.height || getApproxNodeHeight(f)) / 2;
+                                return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height;
+                            });
+
                             // 计算连接点中心位置
                             const fW = f.width || 420, fH = f.height || getApproxNodeHeight(f);
                             const tH = t.height || getApproxNodeHeight(t);
-                            const fx = f.x + fW + PORT_OFFSET, fy = f.y + fH / 2;
+
+                            // 如果源节点在分组中，从分组连接点出发
+                            let fx: number, fy: number;
+                            if (sourceGroup) {
+                                fx = sourceGroup.x + sourceGroup.width + PORT_OFFSET;
+                                fy = sourceGroup.y + sourceGroup.height / 2;
+                            } else {
+                                fx = f.x + fW + PORT_OFFSET;
+                                fy = f.y + fH / 2;
+                            }
+
                             const tx = t.x - PORT_OFFSET; let ty = t.y + tH / 2;
                             if (Math.abs(fy - ty) < 0.5) ty += 0.5;
                             if (isNaN(fx) || isNaN(fy) || isNaN(tx) || isNaN(ty)) return null;
@@ -2217,6 +2784,13 @@ export default function StudioTab() {
                             if (connectionStart.id === 'smart-sequence-dock') {
                                 startX = (connectionStart.screenX - pan.x) / scale;
                                 startY = (connectionStart.screenY - pan.y) / scale;
+                            } else if (connectionStart.id.startsWith('group:')) {
+                                // 分组连接点
+                                const groupId = connectionStart.id.replace('group:', '');
+                                const group = groups.find(g => g.id === groupId);
+                                if (!group) return null;
+                                startX = group.x + group.width + PORT_OFFSET;
+                                startY = group.y + group.height / 2;
                             } else {
                                 const startNode = nodes.find(n => n.id === connectionStart.id);
                                 if (!startNode) return null;
@@ -2255,16 +2829,19 @@ export default function StudioTab() {
                                     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
                                 }
 
-                                // 处理选择逻辑
+                                // 检测是否是复制拖拽（Cmd/Ctrl + 拖拽）
+                                const isCopyDrag = e.metaKey || e.ctrlKey;
+
+                                // 处理选择逻辑 - 仅 Shift 用于多选切换
                                 let currentSelection = selectedNodeIds;
-                                if (e.shiftKey || e.metaKey || e.ctrlKey) {
-                                    // Shift/Ctrl/Meta 点击：切换选择
+                                if (e.shiftKey) {
+                                    // Shift 点击：切换选择
                                     currentSelection = selectedNodeIds.includes(id)
                                         ? selectedNodeIds.filter(i => i !== id)
                                         : [...selectedNodeIds, id];
                                     setSelectedNodeIds(currentSelection);
-                                } else if (!selectedNodeIds.includes(id)) {
-                                    // 点击未选中的节点：只选中当前节点
+                                } else if (!selectedNodeIds.includes(id) && !isCopyDrag) {
+                                    // 点击未选中的节点：只选中当前节点（复制拖拽时不改变选择）
                                     currentSelection = [id];
                                     setSelectedNodeIds(currentSelection);
                                 }
@@ -2297,6 +2874,23 @@ export default function StudioTab() {
                                         })
                                         .filter((item): item is { id: string, startX: number, startY: number } => item !== null);
 
+                                    // 记录选中的分组的初始位置及其内部节点（用于多选拖动）
+                                    const selectedGroupsData = selectedGroupIds.map(gId => {
+                                        const group = groups.find(g => g.id === gId);
+                                        if (!group) return null;
+                                        // 找出分组内部的节点（不包括已在otherSelectedNodes中的节点）
+                                        const childNodes = nodes.filter(nd => {
+                                            const b = getNodeBounds(nd);
+                                            const cx = b.x + b.width / 2;
+                                            const cy = b.y + b.height / 2;
+                                            const inGroup = cx > group.x && cx < group.x + group.width && cy > group.y && cy < group.y + group.height;
+                                            // 排除已经单独选中的节点（避免重复移动）
+                                            const alreadySelected = currentSelection.includes(nd.id);
+                                            return inGroup && !alreadySelected;
+                                        }).map(nd => ({ id: nd.id, startX: nd.x, startY: nd.y }));
+                                        return { id: gId, startX: group.x, startY: group.y, childNodes };
+                                    }).filter((item): item is { id: string, startX: number, startY: number, childNodes: { id: string, startX: number, startY: number }[] } => item !== null);
+
                                     dragNodeRef.current = {
                                         id,
                                         startX: n.x,
@@ -2307,7 +2901,9 @@ export default function StudioTab() {
                                         siblingNodeIds,
                                         nodeWidth: w,
                                         nodeHeight: h,
-                                        otherSelectedNodes
+                                        otherSelectedNodes,
+                                        selectedGroups: selectedGroupsData,
+                                        isCopyDrag
                                     };
                                     setDraggingNodeParentGroupId(pGroup?.id || null);
                                     setDraggingNodeId(id);
@@ -2329,6 +2925,75 @@ export default function StudioTab() {
                                 if (start && start.id !== id) {
                                     if (start.id === 'smart-sequence-dock') {
                                         // Smart sequence dock connection - do nothing for now
+                                    } else if (start.id.startsWith('group:')) {
+                                        // 分组连接到节点：将分组内所有素材节点连接到目标节点
+                                        const groupId = start.id.replace('group:', '');
+                                        const group = groupsRef.current.find(g => g.id === groupId);
+                                        if (group) {
+                                            // 获取分组内的所有节点（使用 nodeIds 或通过位置计算）
+                                            const groupNodeIds = group.nodeIds || nodes.filter(n => {
+                                                const b = getNodeBounds(n);
+                                                const cx = b.x + b.width / 2;
+                                                const cy = b.y + b.height / 2;
+                                                return cx > group.x && cx < group.x + group.width && cy > group.y && cy < group.y + group.height;
+                                            }).map(n => n.id);
+
+                                            // 为每个分组内节点创建连接
+                                            const newConnections: Connection[] = [];
+                                            groupNodeIds.forEach(nodeId => {
+                                                const exists = connectionsRef.current.some(c => c.from === nodeId && c.to === id);
+                                                if (!exists) {
+                                                    newConnections.push({ from: nodeId, to: id });
+                                                }
+                                            });
+
+                                            if (newConnections.length > 0) {
+                                                setConnections(p => [...p, ...newConnections]);
+                                                // 更新目标节点的 inputs
+                                                setNodes(p => p.map(n => {
+                                                    if (n.id !== id) return n;
+                                                    const newInputs = [...n.inputs];
+
+                                                    // 如果目标是 MULTI_FRAME_VIDEO，添加所有图片为帧
+                                                    if (n.type === NodeType.MULTI_FRAME_VIDEO) {
+                                                        let currentFrames = n.data.multiFrameData?.frames || [];
+                                                        groupNodeIds.forEach(nodeId => {
+                                                            if (!newInputs.includes(nodeId)) {
+                                                                newInputs.push(nodeId);
+                                                                const sourceNode = p.find(x => x.id === nodeId);
+                                                                const sourceImage = sourceNode?.data.image;
+                                                                if (sourceImage && !currentFrames.some(f => f.src === sourceImage) && currentFrames.length < 10) {
+                                                                    currentFrames = [...currentFrames, {
+                                                                        id: `mf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                                                                        src: sourceImage,
+                                                                        transition: { duration: 4, prompt: '' }
+                                                                    }];
+                                                                }
+                                                            }
+                                                        });
+                                                        return {
+                                                            ...n,
+                                                            inputs: newInputs,
+                                                            data: {
+                                                                ...n.data,
+                                                                multiFrameData: {
+                                                                    ...n.data.multiFrameData,
+                                                                    frames: currentFrames,
+                                                                }
+                                                            }
+                                                        };
+                                                    }
+
+                                                    // 普通节点
+                                                    groupNodeIds.forEach(nodeId => {
+                                                        if (!newInputs.includes(nodeId)) {
+                                                            newInputs.push(nodeId);
+                                                        }
+                                                    });
+                                                    return { ...n, inputs: newInputs };
+                                                }));
+                                            }
+                                        }
                                     } else {
                                         // Determine connection direction based on port types
                                         // output -> input: from = start, to = target (normal)
@@ -2346,19 +3011,76 @@ export default function StudioTab() {
                                             if (exists) return p;
                                             return [...p, { from: fromId, to: toId }];
                                         });
-                                        setNodes(p => p.map(n => {
-                                            if (n.id !== toId) return n;
-                                            // Prevent duplicate inputs
-                                            if (n.inputs.includes(fromId)) return n;
-                                            return { ...n, inputs: [...n.inputs, fromId] };
-                                        }));
+                                        setNodes(p => {
+                                            // 获取源节点信息
+                                            const sourceNode = p.find(x => x.id === fromId);
+                                            const sourceImage = sourceNode?.data.image;
+                                            const sourcePrompt = sourceNode?.data.prompt;
+                                            const isSourcePromptNode = sourceNode?.type === NodeType.PROMPT_INPUT;
+
+                                            return p.map(n => {
+                                                if (n.id !== toId) return n;
+                                                // Prevent duplicate inputs
+                                                if (n.inputs.includes(fromId)) return n;
+
+                                                // 如果目标是 MULTI_FRAME_VIDEO 且源节点有图片，添加为帧
+                                                if (n.type === NodeType.MULTI_FRAME_VIDEO && sourceImage) {
+                                                    const currentFrames = n.data.multiFrameData?.frames || [];
+                                                    // 检查是否已存在该图片
+                                                    const alreadyExists = currentFrames.some(f => f.src === sourceImage);
+                                                    if (!alreadyExists && currentFrames.length < 10) {
+                                                        const newFrame = {
+                                                            id: `mf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                                                            src: sourceImage,
+                                                            transition: { duration: 4, prompt: '' }
+                                                        };
+                                                        return {
+                                                            ...n,
+                                                            inputs: [...n.inputs, fromId],
+                                                            data: {
+                                                                ...n.data,
+                                                                multiFrameData: {
+                                                                    ...n.data.multiFrameData,
+                                                                    frames: [...currentFrames, newFrame],
+                                                                }
+                                                            }
+                                                        };
+                                                    }
+                                                }
+
+                                                // 如果源节点是提示词节点，且目标是图片/视频生成节点，自动复制提示词
+                                                if (isSourcePromptNode && sourcePrompt && (
+                                                    n.type === NodeType.IMAGE_GENERATOR ||
+                                                    n.type === NodeType.VIDEO_GENERATOR ||
+                                                    n.type === NodeType.VIDEO_FACTORY
+                                                )) {
+                                                    return {
+                                                        ...n,
+                                                        inputs: [...n.inputs, fromId],
+                                                        data: { ...n.data, prompt: sourcePrompt }
+                                                    };
+                                                }
+
+                                                return { ...n, inputs: [...n.inputs, fromId] };
+                                            });
+                                        });
                                     }
                                 }
                                 // 立即更新 ref，防止 handleGlobalMouseUp 误触发节点选择框
                                 connectionStartRef.current = null;
                                 setConnectionStart(null);
                             }}
-                            onNodeContextMenu={(e, id) => { e.stopPropagation(); e.preventDefault(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id }); setContextMenuTarget({ type: 'node', id }); }}
+                            onNodeContextMenu={(e, id) => {
+                                e.stopPropagation(); e.preventDefault();
+                                // 如果选中了多个节点，统一显示多选菜单
+                                if (selectedNodeIds.length > 1) {
+                                    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: 'multi' });
+                                    setContextMenuTarget({ type: 'multi-selection', ids: selectedNodeIds });
+                                } else {
+                                    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id });
+                                    setContextMenuTarget({ type: 'node', id });
+                                }
+                            }}
                             onOutputPortAction={(nodeId, position) => {
                                 // 双击右连接点时，弹出适配上游素材的节点选择框
                                 const canvasX = (position.x - pan.x) / scale;
@@ -2388,6 +3110,7 @@ export default function StudioTab() {
                             }}
                             onDragResultToCanvas={handleDragResultToCanvas}
                             onGridDragStateChange={handleGridDragStateChange}
+                            onBatchUpload={handleBatchUpload}
                             isSelected={selectedNodeIds.includes(node.id)}
                             inputAssets={node.inputs.map(i => nodes.find(n => n.id === i)).filter(n => n && (n.data.image || n.data.videoUri || n.data.croppedFrame)).slice(0, 6).map(n => ({ id: n!.id, type: (n!.data.croppedFrame || n!.data.image) ? 'image' : 'video', src: n!.data.croppedFrame || n!.data.image || n!.data.videoUri! }))}
                             onInputReorder={(nodeId, newOrder) => { const node = nodes.find(n => n.id === nodeId); if (node) { setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, inputs: newOrder } : n)); } }}
@@ -2397,6 +3120,26 @@ export default function StudioTab() {
                     ))}
 
                     {selectionRect && <div className="absolute border border-cyan-500/40 bg-cyan-500/10 rounded-lg pointer-events-none" style={{ left: (Math.min(selectionRect.startX, selectionRect.currentX) - pan.x) / scale, top: (Math.min(selectionRect.startY, selectionRect.currentY) - pan.y) / scale, width: Math.abs(selectionRect.currentX - selectionRect.startX) / scale, height: Math.abs(selectionRect.currentY - selectionRect.startY) / scale }} />}
+
+                    {/* 复制拖拽预览 - 显示节点副本将被创建的位置 */}
+                    {copyDragPreview && copyDragPreview.nodes.map((node, idx) => (
+                        <div
+                            key={idx}
+                            className="absolute pointer-events-none rounded-[24px] border-2 border-dashed border-purple-400 bg-purple-500/10"
+                            style={{
+                                left: node.x,
+                                top: node.y,
+                                width: node.width,
+                                height: node.height,
+                            }}
+                        >
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="px-3 py-1.5 bg-purple-500/80 rounded-full text-[10px] font-bold text-white whitespace-nowrap shadow-lg flex items-center gap-1">
+                                    <Copy size={10} /> 复制到此处
+                                </div>
+                            </div>
+                        </div>
+                    ))}
 
                     {/* 组图拖拽放置预览 - 显示节点将被创建的位置 */}
                     {gridDragDropPreview && (
@@ -2443,7 +3186,7 @@ export default function StudioTab() {
                         {contextMenuTarget?.type === 'create' && (
                             <>
                                 <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">创建新节点</div>
-                                {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR].map(t => { const ItemIcon = getNodeIcon(t); return (<button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" /> {getNodeNameCN(t)} </button>); })}
+                                {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.MULTI_FRAME_VIDEO, NodeType.AUDIO_GENERATOR].map(t => { const ItemIcon = getNodeIcon(t); return (<button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" /> {getNodeNameCN(t)} </button>); })}
                             </>
                         )}
                         {contextMenuTarget?.type === 'group' && (
@@ -2478,6 +3221,7 @@ export default function StudioTab() {
                                     { type: NodeType.PROMPT_INPUT, label: '分析图片', icon: FileSearch, color: 'text-emerald-500' },
                                     { type: NodeType.IMAGE_GENERATOR, label: '编辑图片', icon: ImageIcon, color: 'text-blue-500' },
                                     { type: NodeType.VIDEO_GENERATOR, label: '生成视频', icon: Film, color: 'text-purple-500' },
+                                    { type: NodeType.MULTI_FRAME_VIDEO, label: '智能多帧', icon: Scan, color: 'text-teal-500' },
                                 ];
                             } else if (hasVideo) {
                                 availableTypes = [
@@ -2517,6 +3261,7 @@ export default function StudioTab() {
                                         [NodeType.VIDEO_GENERATOR]: '视频生成',
                                         [NodeType.VIDEO_FACTORY]: '视频工厂',
                                         [NodeType.AUDIO_GENERATOR]: '音频生成',
+                                        [NodeType.MULTI_FRAME_VIDEO]: '智能多帧',
                                     };
                                     return typeMap[nodeType] || '新节点';
                                 };
@@ -2533,6 +3278,24 @@ export default function StudioTab() {
                                 // 如果源节点是提示词节点，将提示词注入到下游节点
                                 const promptToInject = isPromptNode ? sourceNode.data.prompt : undefined;
 
+                                // 如果创建智能多帧节点且源节点有图片，将图片作为第一帧
+                                const getMultiFrameData = () => {
+                                    if (nodeType === NodeType.MULTI_FRAME_VIDEO && hasImage && sourceNode.data.image) {
+                                        return {
+                                            frames: [{
+                                                id: `mf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                                                src: sourceNode.data.image,
+                                                transition: { duration: 4, prompt: '' }
+                                            }],
+                                            viduModel: 'viduq2-turbo' as const,
+                                            viduResolution: '720p' as const,
+                                        };
+                                    }
+                                    return nodeType === NodeType.MULTI_FRAME_VIDEO
+                                        ? { frames: [], viduModel: 'viduq2-turbo' as const, viduResolution: '720p' as const }
+                                        : undefined;
+                                };
+
                                 const newNode: AppNode = {
                                     id: newNodeId,
                                     type: nodeType,
@@ -2547,6 +3310,7 @@ export default function StudioTab() {
                                         aspectRatio: '16:9',
                                         ...(generationMode && { generationMode }),
                                         ...(promptToInject && { prompt: promptToInject }), // 注入提示词
+                                        ...(getMultiFrameData() && { multiFrameData: getMultiFrameData() }),
                                     },
                                     inputs: [sourceNode.id]
                                 };
@@ -2671,14 +3435,16 @@ export default function StudioTab() {
                                             const minX = Math.min(...selectedNodes.map(n => n.x));
                                             const minY = Math.min(...selectedNodes.map(n => n.y));
                                             const maxX = Math.max(...selectedNodes.map(n => n.x + (n.width || 420)));
-                                            const maxY = Math.max(...selectedNodes.map(n => n.y + 320));
+                                            const maxY = Math.max(...selectedNodes.map(n => n.y + (n.height || 320)));
                                             setGroups(prev => [...prev, {
                                                 id: `g-${Date.now()}`,
                                                 title: '新建分组',
                                                 x: minX - 32,
                                                 y: minY - 32,
                                                 width: (maxX - minX) + 64,
-                                                height: (maxY - minY) + 64
+                                                height: (maxY - minY) + 64,
+                                                hasOutputPort: true,
+                                                nodeIds: selectedNodes.map(n => n.id)
                                             }]);
                                         }
                                         setContextMenu(null);
@@ -2717,18 +3483,6 @@ export default function StudioTab() {
                         }}
                     />
                 )}
-                <SmartSequenceDock
-                    isOpen={isMultiFrameOpen}
-                    onClose={() => setIsMultiFrameOpen(false)}
-                    onGenerate={handleMultiFrameGenerate}
-                    onConnectStart={(e, type) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const portElement = e.currentTarget as HTMLElement;
-                        const rect = portElement.getBoundingClientRect();
-                        setConnectionStart({ id: 'smart-sequence-dock', portType: 'output', screenX: rect.left + rect.width / 2, screenY: rect.top + rect.height / 2 });
-                    }}
-                />
                 <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
                 <SidebarDock
@@ -2736,8 +3490,6 @@ export default function StudioTab() {
                     onUndo={undo}
                     isChatOpen={isChatOpen}
                     onToggleChat={() => setIsChatOpen(!isChatOpen)}
-                    isMultiFrameOpen={isMultiFrameOpen}
-                    onToggleMultiFrame={() => setIsMultiFrameOpen(!isMultiFrameOpen)}
                     assetHistory={assetHistory}
                     onHistoryItemClick={(item) => { const type = item.type.includes('image') ? NodeType.IMAGE_GENERATOR : NodeType.VIDEO_GENERATOR; const data = item.type === 'image' ? { image: item.src } : { videoUri: item.src }; addNode(type, undefined, undefined, data); }}
                     onDeleteAsset={(id) => setAssetHistory(prev => prev.filter(a => a.id !== id))}

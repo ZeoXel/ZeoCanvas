@@ -15,10 +15,6 @@ interface SidebarDockProps {
     isChatOpen: boolean;
     onToggleChat: () => void;
 
-    // Smart Sequence (ex-MultiFrame)
-    isMultiFrameOpen: boolean;
-    onToggleMultiFrame: () => void;
-
     // History Props
     assetHistory: any[];
     onHistoryItemClick: (item: any) => void;
@@ -48,6 +44,7 @@ const getNodeNameCN = (t: string) => {
         case NodeType.VIDEO_FACTORY: return '视频工厂';
         case NodeType.AUDIO_GENERATOR: return '灵感音乐';
         case NodeType.IMAGE_EDITOR: return '图像编辑';
+        case NodeType.MULTI_FRAME_VIDEO: return '智能多帧';
         default: return t;
     }
 };
@@ -62,6 +59,7 @@ const getNodeIcon = (t: string) => {
         case NodeType.VIDEO_FACTORY: return Clapperboard;
         case NodeType.AUDIO_GENERATOR: return Mic2;
         case NodeType.IMAGE_EDITOR: return Brush;
+        case NodeType.MULTI_FRAME_VIDEO: return Layers;
         default: return Plus;
     }
 };
@@ -81,6 +79,7 @@ const getNodeColor = (type: string) => {
         case NodeType.VIDEO_FACTORY: return '#f472b6'; // pink
         case NodeType.AUDIO_GENERATOR: return '#fb923c'; // orange
         case NodeType.IMAGE_EDITOR: return '#facc15'; // yellow
+        case NodeType.MULTI_FRAME_VIDEO: return '#10b981'; // emerald (智能多帧-绿色)
         default: return '#cbd5e1';
     }
 };
@@ -237,8 +236,6 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
     onUndo,
     isChatOpen,
     onToggleChat,
-    isMultiFrameOpen,
-    onToggleMultiFrame,
     assetHistory,
     onHistoryItemClick,
     onDeleteAsset,
@@ -474,7 +471,7 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
                     </span>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 custom-scrollbar space-y-2">
-                    {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.AUDIO_GENERATOR].map(t => {
+                    {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.MULTI_FRAME_VIDEO, NodeType.AUDIO_GENERATOR].map(t => {
                         const ItemIcon = getNodeIcon(t);
                         return (
                             <button
@@ -506,7 +503,6 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
             >
                 {[
                     { id: 'add', icon: Plus, tooltip: '添加节点' },
-                    { id: 'smart_sequence', icon: Clapperboard, action: onToggleMultiFrame, active: isMultiFrameOpen, tooltip: '智能多帧' },
                     { id: 'history', icon: History, tooltip: '历史记录' },
                     { id: 'chat', icon: MessageSquare, action: onToggleChat, active: isChatOpen, tooltip: '对话' },
                     { id: 'undo', icon: RotateCcw, action: onUndo, tooltip: '撤销' },
