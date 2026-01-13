@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Image from 'next/image';
 import { Node } from './Node';
 import { SidebarDock } from './SidebarDock';
+import { useViewport, useInteraction, useCanvasData } from '@/hooks/canvas';
 import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
 import { ImageEditOverlay } from './ImageEditOverlay';
@@ -170,6 +171,12 @@ const ExpandedView = ({ media, onClose }: { media: any, onClose: () => void }) =
 };
 
 export default function StudioTab() {
+    // === NEW HOOKS (准备迁移) ===
+    // 这些 hooks 目前未使用，用于验证集成和准备后续迁移
+    const _viewport = useViewport();
+    const _interaction = useInteraction();
+    const _canvasData = useCanvasData();
+
     // --- Global App State ---
     const [workflows, setWorkflows] = useState<Workflow[]>([]);
     const [assetHistory, setAssetHistory] = useState<any[]>([]);
