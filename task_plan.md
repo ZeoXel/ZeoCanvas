@@ -28,20 +28,22 @@
 - (暂无)
 
 ## Status
-**Phase 4 IN PROGRESS** - panning 状态已迁移
+**Phase 4 COMPLETE** - Hook 状态迁移完成
 
 ## 已完成
 - [x] useViewport Hook - 视口控制 (scale, pan, 坐标转换, 滚轮缩放)
 - [x] useInteraction Hook - 交互状态机 (InteractionMode 类型)
 - [x] useCanvasData Hook - 画布数据操作 (nodes, connections, groups)
-- [x] useHistory Hook - 撤销/重做管理
-- [x] **viewport 状态已迁移** - scale, pan, scaleRef, panRef (commit: 9665909)
+- [x] useCanvasHistory Hook - 撤销/重做管理
+- [x] **viewport 状态已迁移** - scale, pan, scaleRef, panRef
 - [x] **选择状态已迁移** - selectedNodeIds, selectedGroupIds → useInteraction.selection
 - [x] **鼠标/键盘状态已迁移** - mousePos, isSpacePressed → useInteraction
 - [x] **selectionRect 已迁移** - useInteraction.mode.type === 'selecting'
 - [x] **connectionStart 已迁移** - useInteraction.mode.type === 'connecting'
 - [x] **panning 状态已迁移** - isDraggingCanvas → isPanning, lastMousePos → mode.lastPos
-- [x] 构建验证通过
+- [x] **canvasData 已迁移** - nodes, connections, groups, refs → useCanvasData
+- [x] **history 已迁移** - history, historyIndex, refs → useCanvasHistory
+- [x] 所有构建验证通过
 
 ## 文件结构
 ```

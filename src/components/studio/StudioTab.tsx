@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import Image from 'next/image';
 import { Node } from './Node';
 import { SidebarDock } from './SidebarDock';
-import { useViewport, useInteraction, useCanvasData } from '@/hooks/canvas';
+import { useViewport, useInteraction, useCanvasData, useCanvasHistory } from '@/hooks/canvas';
 import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
 import { ImageEditOverlay } from './ImageEditOverlay';
@@ -229,7 +229,17 @@ export default function StudioTab() {
         nodes, setNodes, nodesRef,
         connections, setConnections, connectionsRef,
         groups, setGroups, groupsRef,
+        loadData,
     } = useCanvasData();
+
+    // History Hook - 撤销/重做
+    const {
+        historyRef, historyIndexRef,
+        canUndo, canRedo,
+        saveSnapshot,
+        undo: undoHistory,
+        redo: redoHistory,
+    } = useCanvasHistory();
 
     // --- Global App State ---
     const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -265,11 +275,8 @@ export default function StudioTab() {
 
     // --- Canvas State ---
     // nodes, setNodes, connections, setConnections, groups, setGroups 已迁移到 useCanvasData Hook
+    // history, historyIndex, historyRef, historyIndexRef 已迁移到 useCanvasHistory Hook
     const [clipboard, setClipboard] = useState<AppNode | null>(null);
-
-    // History
-    const [history, setHistory] = useState<any[]>([]);
-    const [historyIndex, setHistoryIndex] = useState(-1);
 
     // Viewport (scale, pan 已迁移到 useViewport, mousePos 已迁移到 useInteraction)
     // isDraggingCanvas 已迁移到 useInteraction.isPanning
@@ -318,8 +325,7 @@ export default function StudioTab() {
 
     // Refs for closures
     // nodesRef, connectionsRef, groupsRef 已迁移到 useCanvasData Hook
-    const historyRef = useRef(history);
-    const historyIndexRef = useRef(historyIndex);
+    // historyRef, historyIndexRef 已迁移到 useCanvasHistory Hook
     // connectionStartRef 已迁移：使用 modeRef 获取 connectionStart
     const rafRef = useRef<number | null>(null); // For RAF Throttling
     const canvasContainerRef = useRef<HTMLDivElement>(null); // Canvas container ref for coordinate offset
@@ -394,9 +400,7 @@ export default function StudioTab() {
     }, []);
 
     // nodesRef, connectionsRef, groupsRef 的同步已由 useCanvasData 内部处理
-    useEffect(() => {
-        historyRef.current = history; historyIndexRef.current = historyIndex;
-    }, [history, historyIndex]);
+    // historyRef, historyIndexRef 的同步已由 useCanvasHistory 内部处理
 
     // --- Persistence ---
     useEffect(() => {
@@ -687,20 +691,30 @@ export default function StudioTab() {
         setScale(newScale);
     }, [nodes]);
 
+    // 使用 useCanvasHistory 的 saveSnapshot
     const saveHistory = useCallback(() => {
         try {
-            const currentStep = { nodes: JSON.parse(JSON.stringify(nodesRef.current)), connections: JSON.parse(JSON.stringify(connectionsRef.current)), groups: JSON.parse(JSON.stringify(groupsRef.current)) };
-            const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
-            newHistory.push(currentStep); if (newHistory.length > 50) newHistory.shift();
-            setHistory(newHistory); setHistoryIndex(newHistory.length - 1);
+            saveSnapshot({
+                nodes: nodesRef.current,
+                connections: connectionsRef.current,
+                groups: groupsRef.current,
+            });
         } catch (e) {
             console.warn("History save failed:", e);
         }
-    }, []);
+    }, [saveSnapshot, nodesRef, connectionsRef, groupsRef]);
 
+    // 使用 useCanvasHistory 的 undo 和 useCanvasData 的 loadData
     const undo = useCallback(() => {
-        const idx = historyIndexRef.current; if (idx > 0) { const prev = historyRef.current[idx - 1]; setNodes(prev.nodes); setConnections(prev.connections); setGroups(prev.groups); setHistoryIndex(idx - 1); }
-    }, []);
+        const prev = undoHistory();
+        if (prev) loadData(prev);
+    }, [undoHistory, loadData]);
+
+    // redo 功能 (可选)
+    const redo = useCallback(() => {
+        const next = redoHistory();
+        if (next) loadData(next);
+    }, [redoHistory, loadData]);
 
     const deleteNodes = useCallback((ids: string[]) => {
         if (ids.length === 0) return;
