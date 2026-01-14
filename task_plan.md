@@ -56,10 +56,11 @@ StudioTab.tsx 中已添加 hooks 调用（第 174-178 行），
 
 ## 下一步（后续迁移）
 渐进式替换现有状态：
-1. 替换 viewport 相关状态 (scale, pan, scaleRef, panRef)
-2. 替换 interaction 相关状态 (dragging*, resizing*, selection*)
-3. 替换 canvasData 相关状态 (nodes, connections, groups)
-4. 替换 history 相关状态
+1. ✅ 替换 viewport 相关状态 (scale, pan, scaleRef, panRef)
+2. ✅ 替换 selection 相关状态 (selectedNodeIds, selectedGroupIds, mousePos, isSpacePressed)
+3. ⏳ 替换 interaction mode 状态 (dragging*, resizing*, connectionStart 等) - 需要重构事件处理器
+4. ⏳ 替换 canvasData 相关状态 (nodes, connections, groups) - 深度集成，需要谨慎迁移
+5. ⏳ 替换 history 相关状态 - 依赖 canvasData 迁移
 
 ## 使用示例
 ```typescript
