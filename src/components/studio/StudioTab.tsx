@@ -179,8 +179,22 @@ export default function StudioTab() {
         screenToCanvas: viewportScreenToCanvas,
     } = useViewport();
 
+    // Interaction Hook - 选择状态
+    const {
+        selection,
+        setSelection,
+        selectNodes,
+        selectGroups,
+        clearSelection,
+        mousePos, setMousePos,
+        isSpacePressed, setIsSpacePressed,
+    } = useInteraction();
+
+    // 解构选择状态（兼容现有代码）
+    const selectedNodeIds = selection.nodeIds;
+    const selectedGroupIds = selection.groupIds;
+
     // 待迁移的 hooks
-    const _interaction = useInteraction();
     const _canvasData = useCanvasData();
 
     // --- Global App State ---
@@ -225,14 +239,11 @@ export default function StudioTab() {
     const [history, setHistory] = useState<any[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
 
-    // Viewport (scale, pan 已迁移到 useViewport)
+    // Viewport (scale, pan 已迁移到 useViewport, mousePos 已迁移到 useInteraction)
     const [isDraggingCanvas, setIsDraggingCanvas] = useState(false);
     const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
-    const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
-    // Interaction / Selection
-    const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]); // Changed to Array for multi-select
-    const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // 支持多分组选中
+    // Interaction / Selection (已迁移到 useInteraction)
     const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
     const [draggingNodeParentGroupId, setDraggingNodeParentGroupId] = useState<string | null>(null);
     const [draggingGroup, setDraggingGroup] = useState<any>(null);
@@ -247,7 +258,7 @@ export default function StudioTab() {
         screenY: number
     } | null>(null);
     const [selectionRect, setSelectionRect] = useState<any>(null);
-    const [isSpacePressed, setIsSpacePressed] = useState(false); // Track space key for canvas drag
+    // isSpacePressed 已迁移到 useInteraction
 
     // Node Resizing
     const [resizingNodeId, setResizingNodeId] = useState<string | null>(null);
@@ -671,8 +682,8 @@ export default function StudioTab() {
         saveHistory();
         setNodes(p => p.filter(n => !ids.includes(n.id)).map(n => ({ ...n, inputs: n.inputs.filter(i => !ids.includes(i)) })));
         setConnections(p => p.filter(c => !ids.includes(c.from) && !ids.includes(c.to)));
-        setSelectedNodeIds([]);
-    }, [saveHistory]);
+        selectNodes([]);
+    }, [saveHistory, selectNodes]);
 
     const addNode = useCallback((type: NodeType, x?: number, y?: number, initialData?: any) => {
         // IMAGE_EDITOR type removed - use ImageEditOverlay on existing images instead
@@ -867,8 +878,8 @@ export default function StudioTab() {
 
         setNodes(prev => [...prev, newNode]);
         // 选中新创建的节点
-        setSelectedNodeIds([newNode.id]);
-    }, [pan, scale, saveHistory, isPointOnEmptyCanvas]);
+        selectNodes([newNode.id]);
+    }, [pan, scale, saveHistory, isPointOnEmptyCanvas, selectNodes]);
 
     // 批量上传素材：创建多个纵向排布的节点并用分组框包裹
     const handleBatchUpload = useCallback(async (files: File[], type: 'image' | 'video', sourceNodeId: string) => {
@@ -984,9 +995,8 @@ export default function StudioTab() {
         }
 
         // 选中新创建的分组
-        setSelectedGroupIds([newGroup.id]);
-        setSelectedNodeIds([]);
-    }, [saveHistory]);
+        setSelection({ nodeIds: [], groupIds: [newGroup.id] });
+    }, [saveHistory, setSelection]);
 
     // scaleRef, panRef 已迁移到 useViewport
 
@@ -1034,7 +1044,7 @@ export default function StudioTab() {
 
     const handleCanvasMouseDown = (e: React.MouseEvent) => {
         if (contextMenu) setContextMenu(null);
-        setSelectedGroupIds([]);
+        selectGroups([]);
         // 点击画布空白区域时，让当前聚焦的输入框失去焦点
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 
@@ -1049,7 +1059,7 @@ export default function StudioTab() {
         if (e.button === 0 && !e.shiftKey) {
             if (e.detail > 1) { e.preventDefault(); return; }
             e.preventDefault(); // 防止拖拽选中文本
-            setSelectedNodeIds([]);
+            selectNodes([]);
             // Use canvas-relative coordinates for selection rect
             const canvasPos = getCanvasMousePos(e.clientX, e.clientY);
             setSelectionRect({ startX: canvasPos.x, startY: canvasPos.y, currentX: canvasPos.x, currentY: canvasPos.y });
@@ -1299,8 +1309,10 @@ export default function StudioTab() {
                 });
 
                 // 同时设置选中的分组和节点
-                setSelectedGroupIds(selectedGroups.map(g => g.id));
-                setSelectedNodeIds(enclosedNodes.map(n => n.id));
+                setSelection({
+                    groupIds: selectedGroups.map(g => g.id),
+                    nodeIds: enclosedNodes.map(n => n.id)
+                });
             }
             setSelectionRect(null);
         }
@@ -1377,7 +1389,7 @@ export default function StudioTab() {
                     setConnections(prev => [...prev, ...newConnections]);
                 }
                 // 选中新复制的节点
-                setSelectedNodeIds(newNodes.map(n => n.id));
+                selectNodes(newNodes.map(n => n.id));
             } else {
                 // 普通拖拽：移动节点（包括选中分组的内部节点）
                 const selectedGroupsToMove = dragNodeRef.current?.selectedGroups || [];
@@ -2225,12 +2237,11 @@ export default function StudioTab() {
         setNodes([]);
         setConnections([]);
         setGroups([]);
-        setSelectedNodeIds([]);
-        setSelectedGroupIds([]);
+        clearSelection();
         // 重置视口
         setPan({ x: 0, y: 0 });
         setScale(1);
-    }, [currentCanvasId, nodes.length, canvases.length, saveCurrentCanvas]);
+    }, [currentCanvasId, nodes.length, canvases.length, saveCurrentCanvas, clearSelection]);
 
     const selectCanvas = useCallback((id: string) => {
         if (id === currentCanvasId) return;
@@ -2247,8 +2258,7 @@ export default function StudioTab() {
             setConnections(JSON.parse(JSON.stringify(canvas.connections)));
             setGroups(JSON.parse(JSON.stringify(canvas.groups)));
             setCurrentCanvasId(id);
-            setSelectedNodeIds([]);
-            setSelectedGroupIds([]);
+            clearSelection();
 
             // 恢复视口状态
             if (canvas.pan && canvas.scale) {
@@ -2323,9 +2333,8 @@ export default function StudioTab() {
             }
             return newCanvases;
         });
-        setSelectedNodeIds([]);
-        setSelectedGroupIds([]);
-    }, [canvases, currentCanvasId]);
+        clearSelection();
+    }, [canvases, currentCanvasId, clearSelection]);
 
     const renameCanvas = useCallback((id: string, newTitle: string) => {
         setCanvases(prev => prev.map(c => c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c));
@@ -2345,7 +2354,7 @@ export default function StudioTab() {
         const handleKeyDown = (e: KeyboardEvent) => {
             const target = e.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); setSelectedNodeIds(nodesRef.current.map(n => n.id)); return; }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); selectNodes(nodesRef.current.map(n => n.id)); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') { const lastSelected = selectedNodeIds[selectedNodeIds.length - 1]; if (lastSelected) { const nodeToCopy = nodesRef.current.find(n => n.id === lastSelected); if (nodeToCopy) { e.preventDefault(); setClipboard(JSON.parse(JSON.stringify(nodeToCopy))); } } return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
@@ -2369,7 +2378,7 @@ export default function StudioTab() {
                         const newConnections = inheritedInputs.map(inputId => ({ from: inputId, to: newNodeId }));
                         setConnections(prev => [...prev, ...newConnections]);
                     }
-                    setSelectedNodeIds([newNode.id]);
+                    selectNodes([newNode.id]);
                 }
                 return;
             }
@@ -2378,7 +2387,7 @@ export default function StudioTab() {
                     saveHistory();
                     if (selectedGroupIds.length > 0) {
                         setGroups(prev => prev.filter(g => !selectedGroupIds.includes(g.id)));
-                        setSelectedGroupIds([]);
+                        selectGroups([]);
                     }
                     if (selectedNodeIds.length > 0) {
                         deleteNodes(selectedNodeIds);
@@ -2610,8 +2619,7 @@ export default function StudioTab() {
                                 if (target.closest('[data-resize-handle]')) return;
                                 e.stopPropagation(); e.preventDefault();
                                 // 点击分组：选中分组，清除节点选择
-                                setSelectedGroupIds([g.id]);
-                                setSelectedNodeIds([]);
+                                setSelection({ nodeIds: [], groupIds: [g.id] });
                                 const childNodes = nodes.filter(n => { const b = getNodeBounds(n); const cx = b.x + b.width / 2; const cy = b.y + b.height / 2; return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height; }).map(n => ({ id: n.id, startX: n.x, startY: n.y }));
                                 dragGroupRef.current = { id: g.id, startX: g.x, startY: g.y, mouseStartX: e.clientX, mouseStartY: e.clientY, childNodes };
                                 setActiveGroupNodeIds(childNodes.map(c => c.id)); setDraggingGroup({ id: g.id });
@@ -2846,11 +2854,11 @@ export default function StudioTab() {
                                     currentSelection = selectedNodeIds.includes(id)
                                         ? selectedNodeIds.filter(i => i !== id)
                                         : [...selectedNodeIds, id];
-                                    setSelectedNodeIds(currentSelection);
+                                    selectNodes(currentSelection);
                                 } else if (!selectedNodeIds.includes(id) && !isCopyDrag) {
                                     // 点击未选中的节点：只选中当前节点（复制拖拽时不改变选择）
                                     currentSelection = [id];
-                                    setSelectedNodeIds(currentSelection);
+                                    selectNodes(currentSelection);
                                 }
                                 // 如果点击已选中的节点，保持当前选择不变（允许拖动多选）
 
