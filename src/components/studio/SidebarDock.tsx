@@ -576,31 +576,31 @@ export const SidebarDock: React.FC<SidebarDockProps> = ({
 
             </div>
 
-            {/* Undo/Redo - 独立浮动按钮组 */}
-            <div className="fixed left-6 bottom-6 flex gap-1 p-1 bg-white/70 dark:bg-slate-900/70 backdrop-blur-xl border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50">
+            {/* Undo/Redo - 独立浮动按钮组 (与右下角缩放条风格统一) */}
+            <div className="fixed left-6 bottom-8 flex gap-1 px-2 py-1.5 bg-white/80 dark:bg-slate-800/80 backdrop-blur-2xl border border-slate-300 dark:border-slate-600 rounded-full shadow-2xl z-50">
                 <button
                     onClick={onUndo}
                     disabled={!canUndo}
-                    className={`w-7 h-7 rounded-md flex items-center justify-center transition-all duration-150
+                    className={`p-1.5 rounded-full flex items-center justify-center transition-colors
                         ${canUndo
-                            ? 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95'
+                            ? 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700'
                             : 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
                         }`}
                     title="撤销 ⌘Z"
                 >
-                    <Undo2 size={14} strokeWidth={2} />
+                    <Undo2 size={14} strokeWidth={2.5} />
                 </button>
                 <button
                     onClick={onRedo}
                     disabled={!canRedo}
-                    className={`w-7 h-7 rounded-md flex items-center justify-center transition-all duration-150
+                    className={`p-1.5 rounded-full flex items-center justify-center transition-colors
                         ${canRedo
-                            ? 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95'
+                            ? 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700'
                             : 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
                         }`}
                     title="重做 ⌘⇧Z"
                 >
-                    <Redo2 size={14} strokeWidth={2} />
+                    <Redo2 size={14} strokeWidth={2.5} />
                 </button>
             </div>
 
