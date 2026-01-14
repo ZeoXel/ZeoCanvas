@@ -19,7 +19,8 @@ import { saveToStorage, loadFromStorage } from '@/services/storage';
 import {
     Plus, Copy, Trash2, Type, Image as ImageIcon, Video as VideoIcon,
     MousePointerClick, LayoutTemplate, X, RefreshCw, Film, Brush, Mic2, Music, FileSearch,
-    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan
+    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan,
+    Undo2, Redo2
 } from 'lucide-react';
 
 // Apple Physics Curve
@@ -3543,10 +3544,6 @@ export default function StudioTab() {
 
                 <SidebarDock
                     onAddNode={addNode}
-                    onUndo={undo}
-                    onRedo={redo}
-                    canUndo={canUndo}
-                    canRedo={canRedo}
                     isChatOpen={isChatOpen}
                     onToggleChat={() => setIsChatOpen(!isChatOpen)}
                     assetHistory={assetHistory}
@@ -3564,15 +3561,50 @@ export default function StudioTab() {
 
                 <AssistantPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
 
-                <div className="absolute bottom-8 right-8 flex items-center gap-3 px-4 py-2 bg-white/80 dark:bg-slate-800/80 backdrop-blur-2xl border border-slate-300 dark:border-slate-600 rounded-full shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                    <button onClick={() => setScale(s => Math.max(0.2, s - 0.1))} className="p-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-slate-700"><Minus size={14} strokeWidth={3} /></button>
-                    <div className="flex items-center gap-2 min-w-[100px]">
-                        <input type="range" min="0.2" max="3" step="0.1" value={scale} onChange={(e) => setScale(parseFloat(e.target.value))} className="w-24 h-1 bg-white/20 dark:bg-black/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white dark:[&::-webkit-slider-thumb]:bg-slate-300 [&::-webkit-slider-thumb]:shadow-lg hover:[&::-webkit-slider-thumb]:scale-125 transition-all" />
-                        <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 w-8 text-right tabular-nums cursor-pointer hover:text-slate-900 dark:hover:text-slate-100" onClick={() => setScale(1)} title="Reset Zoom">{Math.round(scale * 100)}%</span>
-                    </div>
-                    <button onClick={() => setScale(s => Math.min(3, s + 0.1))} className="p-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-slate-700"><Plus size={14} strokeWidth={3} /></button>
-                    <button onClick={handleFitView} className="p-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 ml-2 border-l border-slate-300 dark:border-slate-600 pl-3" title="适配视图">
-                        <Scan size={14} strokeWidth={3} />
+                {/* 底部工具栏：撤销/重做 + 缩放控制 */}
+                <div className="absolute bottom-8 right-8 flex items-center gap-1 px-2 py-1.5 bg-white/80 dark:bg-slate-800/80 backdrop-blur-2xl border border-slate-300 dark:border-slate-600 rounded-2xl shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                    {/* 撤销/重做 */}
+                    <button
+                        onClick={undo}
+                        disabled={!canUndo}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 disabled:text-slate-300 dark:disabled:text-slate-600 disabled:cursor-not-allowed transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 disabled:hover:bg-transparent"
+                        title="撤销 (⌘Z)"
+                    >
+                        <Undo2 size={16} strokeWidth={2} />
+                    </button>
+                    <button
+                        onClick={redo}
+                        disabled={!canRedo}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 disabled:text-slate-300 dark:disabled:text-slate-600 disabled:cursor-not-allowed transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 disabled:hover:bg-transparent"
+                        title="重做 (⌘⇧Z)"
+                    >
+                        <Redo2 size={16} strokeWidth={2} />
+                    </button>
+
+                    {/* 分隔线 */}
+                    <div className="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1" />
+
+                    {/* 缩放控制 */}
+                    <button onClick={() => setScale(s => Math.max(0.2, s - 0.1))} className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700">
+                        <Minus size={14} strokeWidth={2.5} />
+                    </button>
+                    <span
+                        className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 w-10 text-center tabular-nums cursor-pointer hover:text-slate-900 dark:hover:text-slate-100 select-none"
+                        onClick={() => setScale(1)}
+                        title="重置缩放"
+                    >
+                        {Math.round(scale * 100)}%
+                    </span>
+                    <button onClick={() => setScale(s => Math.min(3, s + 0.1))} className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700">
+                        <Plus size={14} strokeWidth={2.5} />
+                    </button>
+
+                    {/* 分隔线 */}
+                    <div className="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1" />
+
+                    {/* 适配视图 */}
+                    <button onClick={handleFitView} className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700" title="适配视图">
+                        <Scan size={14} strokeWidth={2.5} />
                     </button>
                 </div>
             </div>
