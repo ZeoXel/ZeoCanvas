@@ -171,9 +171,15 @@ const ExpandedView = ({ media, onClose }: { media: any, onClose: () => void }) =
 };
 
 export default function StudioTab() {
-    // === NEW HOOKS (准备迁移) ===
-    // 这些 hooks 目前未使用，用于验证集成和准备后续迁移
-    const _viewport = useViewport();
+    // === HOOKS ===
+    // Viewport Hook - 替换原有的 scale, pan, scaleRef, panRef
+    const {
+        scale, pan, setScale, setPan,
+        scaleRef, panRef,
+        screenToCanvas: viewportScreenToCanvas,
+    } = useViewport();
+
+    // 待迁移的 hooks
     const _interaction = useInteraction();
     const _canvasData = useCanvasData();
 
@@ -219,9 +225,7 @@ export default function StudioTab() {
     const [history, setHistory] = useState<any[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
 
-    // Viewport
-    const [scale, setScale] = useState<number>(1);
-    const [pan, setPan] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
+    // Viewport (scale, pan 已迁移到 useViewport)
     const [isDraggingCanvas, setIsDraggingCanvas] = useState(false);
     const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
     const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
@@ -984,11 +988,7 @@ export default function StudioTab() {
         setSelectedNodeIds([]);
     }, [saveHistory]);
 
-    // 使用 ref 存储最新的 scale 和 pan 值，避免闭包问题
-    const scaleRef = useRef(scale);
-    const panRef = useRef(pan);
-    useEffect(() => { scaleRef.current = scale; }, [scale]);
-    useEffect(() => { panRef.current = pan; }, [pan]);
+    // scaleRef, panRef 已迁移到 useViewport
 
     const handleWheel = useCallback((e: WheelEvent) => {
         e.preventDefault();

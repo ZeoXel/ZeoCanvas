@@ -31,6 +31,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // 初始化：检查是否已登录
     useEffect(() => {
         const initAuth = async () => {
+            // 开发模式：跳过认证，使用模拟用户
+            if (process.env.NEXT_PUBLIC_SKIP_AUTH === 'true') {
+                setUser({
+                    id: 'dev-user',
+                    email: 'dev@local.test',
+                    username: 'Developer',
+                    nickname: '开发者',
+                    token: 'dev-token',
+                });
+                setIsLoading(false);
+                return;
+            }
+
             // 首先尝试从本地存储快速恢复
             const savedUser = getSavedUser();
             if (savedUser) {
