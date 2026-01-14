@@ -4,9 +4,6 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import Image from 'next/image';
 import { Node } from './Node';
 import { SidebarDock } from './SidebarDock';
-import { SelectionRect } from './canvas/SelectionRect';
-import { ConnectionsLayer } from './canvas/ConnectionsLayer';
-import { GroupsLayer } from './canvas/GroupsLayer';
 import { useViewport, useInteraction, useCanvasData, useCanvasHistory } from '@/hooks/canvas';
 import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
@@ -395,10 +392,6 @@ export default function StudioTab() {
         currentWidth?: number,
         currentHeight?: number
     } | null>(null);
-
-    // 事件处理器 refs - 用于稳定化事件监听器，避免频繁重挂载
-    const handleGlobalMouseMoveRef = useRef<(e: MouseEvent) => void>(() => {});
-    const handleGlobalMouseUpRef = useRef<(e: MouseEvent) => void>(() => {});
 
     // Helper to get mouse position relative to canvas container (accounting for Navbar offset)
     const getCanvasMousePos = useCallback((clientX: number, clientY: number) => {
@@ -1541,23 +1534,7 @@ export default function StudioTab() {
         dragNodeRef.current = null; resizeContextRef.current = null; dragGroupRef.current = null; resizeGroupRef.current = null;
     }, [selectionRect, finishInteraction, getConnectionStartRef, pan, scale, saveHistory, draggingNodeId, resizingNodeId, resizingGroupId]);
 
-    // 同步 refs - 保持最新的处理器引用
-    useEffect(() => {
-        handleGlobalMouseMoveRef.current = handleGlobalMouseMove;
-        handleGlobalMouseUpRef.current = handleGlobalMouseUp;
-    });
-
-    // 稳定化的事件监听器 - 只挂载一次，通过 ref 调用最新处理器
-    useEffect(() => {
-        const onMouseMove = (e: MouseEvent) => handleGlobalMouseMoveRef.current(e);
-        const onMouseUp = (e: MouseEvent) => handleGlobalMouseUpRef.current(e);
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup', onMouseUp);
-        return () => {
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-        };
-    }, []); // 空依赖数组 - 只在挂载时添加监听器
+    useEffect(() => { window.addEventListener('mousemove', handleGlobalMouseMove); window.addEventListener('mouseup', handleGlobalMouseUp); return () => { window.removeEventListener('mousemove', handleGlobalMouseMove); window.removeEventListener('mouseup', handleGlobalMouseUp); }; }, [handleGlobalMouseMove, handleGlobalMouseUp]);
 
     const handleNodeUpdate = useCallback((id: string, data: any, size?: any, title?: string) => {
         setNodes(prev => {
@@ -2673,44 +2650,230 @@ export default function StudioTab() {
 
                 <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`, width: '100%', height: '100%', transformOrigin: '0 0' }} className="w-full h-full">
                     {/* Groups Layer */}
-                    <GroupsLayer
-                        groups={groups}
-                        nodes={nodes}
-                        scale={scale}
-                        pan={pan}
-                        connectionStart={connectionStart}
-                        draggingGroup={draggingGroup}
-                        draggingNodeParentGroupId={draggingNodeParentGroupId}
-                        resizingGroupId={resizingGroupId}
-                        selectedGroupIds={selectedGroupIds}
-                        groupRefsMap={groupRefsMap}
-                        dragGroupRef={dragGroupRef}
-                        resizeGroupRef={resizeGroupRef}
-                        NodeType={NodeType}
-                        setSelection={setSelection}
-                        setActiveGroupNodeIds={setActiveGroupNodeIds}
-                        setDraggingGroup={setDraggingGroup}
-                        setContextMenu={setContextMenu}
-                        setContextMenuTarget={setContextMenuTarget}
-                        startConnecting={startConnecting}
-                        finishInteraction={finishInteraction}
-                        setResizingGroupId={setResizingGroupId}
-                    />
+                    {groups.map(g => (
+                        <div
+                            key={g.id}
+                            ref={(el) => { if (el) groupRefsMap.current.set(g.id, el); else groupRefsMap.current.delete(g.id); }}
+                            className={`absolute rounded-[32px] border transition-all ${(draggingGroup?.id === g.id || draggingNodeParentGroupId === g.id || resizingGroupId === g.id) ? 'duration-0' : 'duration-300'} ${selectedGroupIds.includes(g.id) ? 'border-blue-500/50 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`}
+                            style={{ left: g.x, top: g.y, width: g.width, height: g.height }}
+                            onMouseDown={(e) => {
+                                // 检查是否点击在连接点上
+                                const target = e.target as HTMLElement;
+                                if (target.closest('[data-group-port]')) return;
+                                if (target.closest('[data-resize-handle]')) return;
+                                e.stopPropagation(); e.preventDefault();
+                                // 点击分组：选中分组，清除节点选择
+                                setSelection({ nodeIds: [], groupIds: [g.id] });
+                                const childNodes = nodes.filter(n => { const b = getNodeBounds(n); const cx = b.x + b.width / 2; const cy = b.y + b.height / 2; return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height; }).map(n => ({ id: n.id, startX: n.x, startY: n.y }));
+                                dragGroupRef.current = { id: g.id, startX: g.x, startY: g.y, mouseStartX: e.clientX, mouseStartY: e.clientY, childNodes };
+                                setActiveGroupNodeIds(childNodes.map(c => c.id)); setDraggingGroup({ id: g.id });
+                            }}
+                            onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: g.id }); setContextMenuTarget({ type: 'group', id: g.id }); }}
+                        >
+                            <div className="absolute -top-8 left-4 text-xs font-bold text-slate-400 uppercase tracking-widest">{g.title}</div>
+                            {/* 分组右侧连接点 - 仅当内容全部为图片素材时显示 */}
+                            {(() => {
+                                // 找出分组内的所有节点
+                                const groupNodes = nodes.filter(n => {
+                                    const b = getNodeBounds(n);
+                                    const cx = b.x + b.width / 2;
+                                    const cy = b.y + b.height / 2;
+                                    return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height;
+                                });
+                                // 仅当有节点且全部为图片素材时显示连接点
+                                const shouldShowPort = groupNodes.length > 0 && groupNodes.every(n => n.type === NodeType.IMAGE_ASSET);
+                                if (!shouldShowPort) return null;
+
+                                const inverseScale = 1 / Math.max(0.1, scale);
+                                return (
+                                    <div
+                                        data-group-port="output"
+                                        className={`absolute rounded-full border bg-white dark:bg-slate-800 cursor-crosshair flex items-center justify-center transition-all duration-300 shadow-md z-50
+                                            w-5 h-5 border-blue-400 hover:scale-150 hover:bg-blue-500 hover:border-blue-500 group/output
+                                            ${connectionStart ? 'ring-2 ring-purple-400 animate-pulse' : ''}`}
+                                        style={{
+                                            right: `${-12 * inverseScale}px`,
+                                            top: '50%',
+                                            transform: `translateY(-50%) scale(${inverseScale})`,
+                                            transformOrigin: 'center center'
+                                        }}
+                                        onMouseDown={(e) => {
+                                            e.stopPropagation();
+                                            e.preventDefault();
+                                            // 开始从分组拖拽连接线
+                                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                            const centerX = rect.left + rect.width / 2;
+                                            const centerY = rect.top + rect.height / 2;
+                                            startConnecting({
+                                                id: `group:${g.id}`,
+                                                portType: 'output',
+                                                screenX: centerX,
+                                                screenY: centerY
+                                            });
+                                        }}
+                                        onMouseUp={(e) => {
+                                            e.stopPropagation();
+                                            // 如果有连接正在进行，完成连接
+                                            if (connectionStart && connectionStart.id !== `group:${g.id}`) {
+                                                // 分组只能作为输出端，不能接收连接
+                                            }
+                                            finishInteraction();
+                                        }}
+                                        onDoubleClick={(e) => {
+                                            e.stopPropagation();
+                                            // 双击分组连接点，弹出下游节点选择菜单
+                                            const canvasX = (e.clientX - pan.x) / scale;
+                                            const canvasY = (e.clientY - pan.y) / scale;
+                                            setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: g.id });
+                                            setContextMenuTarget({ type: 'group-output-action', groupId: g.id, canvasX, canvasY });
+                                        }}
+                                        title="双击或拖拽创建下游节点"
+                                    >
+                                        <Plus size={12} strokeWidth={3} className="text-blue-400 group-hover/output:text-white transition-colors" />
+                                    </div>
+                                );
+                            })()}
+                            {/* 分组右下角调整尺寸手柄 */}
+                            <div
+                                data-resize-handle
+                                className="absolute w-5 h-5 cursor-se-resize opacity-0 hover:opacity-100 transition-opacity"
+                                style={{ right: 4, bottom: 4, zIndex: 100 }}
+                                onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    setResizingGroupId(g.id);
+                                    resizeGroupRef.current = {
+                                        id: g.id,
+                                        initialWidth: g.width,
+                                        initialHeight: g.height,
+                                        startX: e.clientX,
+                                        startY: e.clientY
+                                    };
+                                }}
+                            >
+                                <svg viewBox="0 0 20 20" className="w-full h-full text-slate-400 dark:text-slate-500">
+                                    <path d="M17 17L7 17M17 17L17 7M17 17L10 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                </svg>
+                            </div>
+                        </div>
+                    ))}
 
                     {/* Connections Layer */}
-                    <ConnectionsLayer
-                        connections={connections}
-                        nodes={nodes}
-                        groups={groups}
-                        theme={theme}
-                        scale={scale}
-                        pan={pan}
-                        mousePos={mousePos}
-                        connectionStart={connectionStart}
-                        connectionPathsRef={connectionPathsRef}
-                        setContextMenu={setContextMenu}
-                        setContextMenuTarget={setContextMenuTarget}
-                    />
+                    <svg className="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none z-0" xmlns="http://www.w3.org/2000/svg" style={{ overflow: 'visible', pointerEvents: 'none', zIndex: 0 }}>
+                        {connections.map((conn) => {
+                            const f = nodes.find(n => n.id === conn.from), t = nodes.find(n => n.id === conn.to);
+                            if (!f || !t) return null;
+
+                            // 检查源节点是否在有 hasOutputPort 的分组中
+                            const sourceGroup = groups.find(g => {
+                                if (!g.hasOutputPort) return false;
+                                const cx = f.x + (f.width || 420) / 2;
+                                const cy = f.y + (f.height || getApproxNodeHeight(f)) / 2;
+                                return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height;
+                            });
+
+                            // 计算连接点中心位置
+                            const fW = f.width || 420, fH = f.height || getApproxNodeHeight(f);
+                            const tH = t.height || getApproxNodeHeight(t);
+
+                            // 如果源节点在分组中，从分组连接点出发
+                            let fx: number, fy: number;
+                            if (sourceGroup) {
+                                fx = sourceGroup.x + sourceGroup.width + PORT_OFFSET;
+                                fy = sourceGroup.y + sourceGroup.height / 2;
+                            } else {
+                                fx = f.x + fW + PORT_OFFSET;
+                                fy = f.y + fH / 2;
+                            }
+
+                            const tx = t.x - PORT_OFFSET; let ty = t.y + tH / 2;
+                            if (Math.abs(fy - ty) < 0.5) ty += 0.5;
+                            if (isNaN(fx) || isNaN(fy) || isNaN(tx) || isNaN(ty)) return null;
+                            const d = generateBezierPath(fx, fy, tx, ty);
+                            // 自动连接（批量生产）使用虚线样式
+                            const isAutoConnection = conn.isAuto;
+                            const connKey = `${conn.from}-${conn.to}`;
+                            return (
+                                <g key={connKey} className="pointer-events-auto group/line">
+                                    <path
+                                        ref={(el) => { if (el) connectionPathsRef.current.set(connKey, el); else connectionPathsRef.current.delete(connKey); }}
+                                        d={d}
+                                        stroke={isAutoConnection ? `url(#${theme === 'dark' ? 'autoGradientDark' : 'autoGradient'})` : `url(#${theme === 'dark' ? 'gradientDark' : 'gradient'})`}
+                                        strokeWidth={(isAutoConnection ? 2 : 3) / scale}
+                                        fill="none"
+                                        strokeOpacity={isAutoConnection ? "0.4" : "0.5"}
+                                        strokeDasharray={isAutoConnection ? `${8 / scale} ${4 / scale}` : "none"}
+                                        className="transition-colors duration-300 group-hover/line:stroke-white group-hover/line:stroke-opacity-40"
+                                    />
+                                    <path ref={(el) => { if (el) connectionPathsRef.current.set(`${connKey}-hit`, el); else connectionPathsRef.current.delete(`${connKey}-hit`); }} d={d} stroke="transparent" strokeWidth="15" fill="none" style={{ cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: connKey }); setContextMenuTarget({ type: 'connection', from: conn.from, to: conn.to }); }} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, id: connKey }); setContextMenuTarget({ type: 'connection', from: conn.from, to: conn.to }); }} />
+                                </g>
+                            );
+                        })}
+                        <defs>
+                            <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.5" />
+                                <stop offset="100%" stopColor="#a855f7" stopOpacity="0.5" />
+                            </linearGradient>
+                            {/* 自动连接的渐变色（更淡） */}
+                            <linearGradient id="autoGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#94a3b8" stopOpacity="0.4" />
+                                <stop offset="100%" stopColor="#cbd5e1" stopOpacity="0.4" />
+                            </linearGradient>
+                            <linearGradient id="previewGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.9" />
+                                <stop offset="100%" stopColor="#a855f7" stopOpacity="0.9" />
+                            </linearGradient>
+                            {/* Dark mode gradients */}
+                            <linearGradient id="gradientDark" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.6" />
+                                <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.6" />
+                            </linearGradient>
+                            <linearGradient id="autoGradientDark" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#64748b" stopOpacity="0.5" />
+                                <stop offset="100%" stopColor="#94a3b8" stopOpacity="0.5" />
+                            </linearGradient>
+                            <linearGradient id="previewGradientDark" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.9" />
+                                <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.9" />
+                            </linearGradient>
+                        </defs>
+                        {connectionStart && (() => {
+                            // 计算起点位置（连接点中心）
+                            let startX = 0, startY = 0;
+                            if (connectionStart.id === 'smart-sequence-dock') {
+                                startX = (connectionStart.screenX - pan.x) / scale;
+                                startY = (connectionStart.screenY - pan.y) / scale;
+                            } else if (connectionStart.id.startsWith('group:')) {
+                                // 分组连接点
+                                const groupId = connectionStart.id.replace('group:', '');
+                                const group = groups.find(g => g.id === groupId);
+                                if (!group) return null;
+                                startX = group.x + group.width + PORT_OFFSET;
+                                startY = group.y + group.height / 2;
+                            } else {
+                                const startNode = nodes.find(n => n.id === connectionStart.id);
+                                if (!startNode) return null;
+                                const w = startNode.width || 420;
+                                const h = startNode.height || getApproxNodeHeight(startNode);
+                                startY = startNode.y + h / 2;
+                                startX = connectionStart.portType === 'output'
+                                    ? startNode.x + w + PORT_OFFSET
+                                    : startNode.x - PORT_OFFSET;
+                            }
+                            const endX = (mousePos.x - pan.x) / scale;
+                            const endY = (mousePos.y - pan.y) / scale;
+                            // 预览线使用简单直线，更直观
+                            return (
+                                <path
+                                    d={`M ${startX} ${startY} L ${endX} ${endY}`}
+                                    stroke={`url(#${theme === 'dark' ? 'previewGradientDark' : 'previewGradient'})`}
+                                    strokeWidth={3 / scale}
+                                    fill="none"
+                                    strokeLinecap="round"
+                                />
+                            );
+                        })()}
+                    </svg>
 
                     {nodes.map(node => (
                         <Node
@@ -3014,7 +3177,7 @@ export default function StudioTab() {
                         />
                     ))}
 
-                    <SelectionRect rect={selectionRect} pan={pan} scale={scale} />
+                    {selectionRect && <div className="absolute border border-cyan-500/40 bg-cyan-500/10 rounded-lg pointer-events-none" style={{ left: (Math.min(selectionRect.startX, selectionRect.currentX) - pan.x) / scale, top: (Math.min(selectionRect.startY, selectionRect.currentY) - pan.y) / scale, width: Math.abs(selectionRect.currentX - selectionRect.startX) / scale, height: Math.abs(selectionRect.currentY - selectionRect.startY) / scale }} />}
 
                     {/* 复制拖拽预览 - 显示节点副本将被创建的位置 */}
                     {copyDragPreview && copyDragPreview.nodes.map((node, idx) => (
