@@ -5,7 +5,7 @@ import { Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckC
 import { AudioNodePanel } from './AudioNodePanel';
 import { ConfigExpandButton, CollapsibleContent } from './shared/ConfigExpandSection';
 import { VideoConfigPanel, ViduConfig, VeoConfig, SeedanceConfig, ViduGenerationMode } from './shared/VideoConfigPanel';
-import { SubjectPicker } from './subject';
+import { SubjectPicker, SubjectHighlighter, SubjectMention } from './subject';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
 
 // Import shared components and utilities
@@ -150,6 +150,7 @@ const NodeComponent: React.FC<NodeProps> = ({
     const [isVideoConfigExpanded, setIsVideoConfigExpanded] = useState(false); // 视频扩展配置展开状态
     const generationMode = node.data.generationMode || 'CONTINUE';
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
     const [localPrompt, setLocalPrompt] = useState(node.data.prompt || '');
     const [inputHeight, setInputHeight] = useState(80);
     const isResizingInput = useRef(false);
@@ -482,8 +483,17 @@ const NodeComponent: React.FC<NodeProps> = ({
                 <div className="w-full h-full p-3 flex flex-col gap-2 group/text bg-white dark:bg-slate-800">
                     {/* 文本编辑区 - 黄色主题 */}
                     <div className="flex-1 bg-amber-50/50 dark:bg-amber-900/10 rounded-[16px] border border-amber-200/50 dark:border-amber-700/30 relative overflow-hidden hover:border-amber-300 dark:hover:border-amber-600 focus-within:border-amber-400 dark:focus-within:border-amber-500 transition-colors">
+                        {/* @主体 高亮层 */}
+                        {subjects && subjects.length > 0 && (
+                            <SubjectHighlighter
+                                text={localPrompt}
+                                subjects={subjects}
+                                className="absolute inset-0 p-3 text-xs font-medium leading-relaxed overflow-hidden"
+                            />
+                        )}
                         <textarea
-                            className="w-full h-full bg-transparent resize-none focus:outline-none text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400/60 dark:placeholder-slate-500/60 p-3 font-medium leading-relaxed custom-scrollbar"
+                            ref={promptTextareaRef}
+                            className="w-full h-full bg-transparent resize-none focus:outline-none text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400/60 dark:placeholder-slate-500/60 p-3 font-medium leading-relaxed custom-scrollbar relative z-10"
                             placeholder={hasUpstreamMedia
                                 ? "分析/优化结果将在此显示...\n\n可手动编辑或通过下方配置框触发 AI 处理。"
                                 : "在此输入或编辑您的提示词...\n\n可手动编辑，或通过下方配置框让 AI 优化。"}
@@ -500,6 +510,15 @@ const NodeComponent: React.FC<NodeProps> = ({
                             onWheel={(e) => e.stopPropagation()}
                             onMouseDown={e => e.stopPropagation()}
                         />
+                        {/* @ 主体提及弹窗 */}
+                        {subjects && subjects.length > 0 && (
+                            <SubjectMention
+                                subjects={subjects}
+                                textareaRef={promptTextareaRef}
+                                value={localPrompt}
+                                onChange={setLocalPrompt}
+                            />
+                        )}
                         {/* 右上角复制按钮 */}
                         {hasContent && (
                             <button
@@ -1548,11 +1567,43 @@ const NodeComponent: React.FC<NodeProps> = ({
             >
                 {/* Glass Panel: Set strict Z-Index to higher layer to overlap thumbnails */}
                 <div className={`w-full rounded-[20px] p-1 flex flex-col gap-1 ${GLASS_PANEL} relative z-[100]`} onMouseDown={e => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
-                    <div className="relative group/input bg-white dark:bg-slate-800 rounded-[16px] flex flex-col overflow-hidden">
+                    <div className="relative group/input bg-white dark:bg-slate-800 rounded-[16px] flex flex-col">
                         {/* InputThumbnails: CUT/CONTINUE显示croppedFrame，其他模式显示上游输入 */}
                         {showThumbnails && (<div className="w-full px-1 pt-1 z-10"><InputThumbnails assets={thumbnailAssets} onReorder={isCutOrContinueMode ? () => { } : (newOrder) => onInputReorder?.(node.id, newOrder)} /></div>)}
-                        <textarea className="w-full bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-500/60 dark:placeholder-slate-400/60 p-3 focus:outline-none resize-none custom-scrollbar font-medium leading-relaxed" style={{ height: `${Math.min(inputHeight, 200)}px` }} placeholder="描述您的修改或生成需求..." value={localPrompt} onChange={(e) => setLocalPrompt(e.target.value)} onBlur={() => { setIsInputFocused(false); commitPrompt(); }} onKeyDown={handleCmdEnter} onFocus={() => setIsInputFocused(true)} onMouseDown={e => e.stopPropagation()} readOnly={isWorking} />
-                        <div className="absolute bottom-0 left-0 w-full h-3 cursor-row-resize flex items-center justify-center opacity-0 group-hover/input:opacity-100 transition-opacity" onMouseDown={handleInputResizeStart}><div className="w-8 h-1 rounded-full bg-slate-100 dark:bg-slate-700 group-hover/input:bg-slate-200 dark:group-hover/input:bg-slate-600" /></div>
+                        {/* @主体 高亮层 + textarea */}
+                        <div className="relative" style={{ height: `${Math.min(inputHeight, 200)}px` }}>
+                            {subjects && subjects.length > 0 && (
+                                <SubjectHighlighter
+                                    text={localPrompt}
+                                    subjects={subjects}
+                                    model={node.data.model}
+                                    className="absolute inset-0 p-3 text-xs font-medium leading-relaxed overflow-hidden"
+                                />
+                            )}
+                            <textarea
+                                ref={promptTextareaRef}
+                                className="w-full h-full bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-500/60 dark:placeholder-slate-400/60 p-3 focus:outline-none resize-none custom-scrollbar font-medium leading-relaxed relative z-10"
+                                placeholder="描述您的修改或生成需求..."
+                                value={localPrompt}
+                                onChange={(e) => setLocalPrompt(e.target.value)}
+                                onBlur={() => { setIsInputFocused(false); commitPrompt(); }}
+                                onKeyDown={handleCmdEnter}
+                                onFocus={() => setIsInputFocused(true)}
+                                onMouseDown={e => e.stopPropagation()}
+                                readOnly={isWorking}
+                            />
+                            {/* resize handle */}
+                            <div className="absolute bottom-0 left-0 w-full h-3 cursor-row-resize flex items-center justify-center opacity-0 group-hover/input:opacity-100 transition-opacity z-20" onMouseDown={handleInputResizeStart}><div className="w-8 h-1 rounded-full bg-slate-100 dark:bg-slate-700 group-hover/input:bg-slate-200 dark:group-hover/input:bg-slate-600" /></div>
+                        </div>
+                        {/* @ 主体提及弹窗 - 放在外层避免被裁剪 */}
+                        {subjects && subjects.length > 0 && (
+                            <SubjectMention
+                                subjects={subjects}
+                                textareaRef={promptTextareaRef}
+                                value={localPrompt}
+                                onChange={setLocalPrompt}
+                            />
+                        )}
                     </div>
                     {/* 视频扩展配置面板 - 仅视频节点且有支持的厂商时显示 */}
                     {(node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) && currentProvider?.id && ['vidu', 'seedance', 'veo'].includes(currentProvider.id) && (

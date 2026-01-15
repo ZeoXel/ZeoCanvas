@@ -145,8 +145,11 @@ export const SubjectEditor: React.FC<SubjectEditorProps> = ({
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
                 placeholder="如：机器人角色、红色跑车..."
                 className="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 transition-colors"
+                autoFocus={!extractorSource}
               />
             </div>
 
@@ -218,6 +221,8 @@ export const SubjectEditor: React.FC<SubjectEditorProps> = ({
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
                 placeholder="简单描述这个主体的特征..."
                 className="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 transition-colors"
               />

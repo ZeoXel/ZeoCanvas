@@ -1,18 +1,18 @@
 
 import { AppNode, VideoGenerationMode, SelectedSubject } from '@/types';
 import { extractLastFrame, urlToBase64 } from './providers/shared';
-import { gemini } from './providers';
+import { generateImage } from './providers/image';
 
-// 图像生成兼容层
+// 图像生成包装函数
 const generateImageFromText = async (
   prompt: string,
   model: string,
   images: string[] = [],
   options: { aspectRatio?: string; resolution?: string; count?: number } = {}
 ): Promise<string[]> => {
-  const result = await gemini.generateImage({
+  const result = await generateImage({
     prompt,
-    model: model as any,
+    model,
     images,
     aspectRatio: options.aspectRatio,
     count: options.count || 1,

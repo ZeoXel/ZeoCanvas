@@ -96,7 +96,10 @@ export const SubjectExtractor: React.FC<SubjectExtractorProps> = ({
                 placeholder="输入自定义角度名称..."
                 value={customAngle}
                 onChange={(e) => setCustomAngle(e.target.value)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
                 className="mt-2 w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+                autoFocus
               />
             )}
           </div>

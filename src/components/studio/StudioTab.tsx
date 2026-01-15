@@ -13,30 +13,41 @@ import { generateViduMultiFrame, queryViduTask, ViduMultiFrameConfig } from '@/s
 import { SettingsModal } from './SettingsModal';
 import { AppNode, NodeType, NodeStatus, Connection, ContextMenuState, Group, Workflow, Canvas, VideoGenerationMode, Subject } from '@/types';
 import { SubjectEditor } from './subject';
-import { gemini, urlToBase64 } from '@/services/providers';
+import { urlToBase64 } from '@/services/providers';
+import { parseSubjectReferences, cleanSubjectReferences, getPrimaryImage } from '@/services/subjectService';
 
-// ==================== API 兼容层 ====================
+// ==================== API 调用层 ====================
 
-// 图像生成
+// 图像生成 (通过 API route)
 const generateImageFromText = async (
   prompt: string,
   model: string,
   images: string[] = [],
   options: { aspectRatio?: string; resolution?: string; count?: number } = {}
 ): Promise<string[]> => {
-  const result = await gemini.generateImage({
-    prompt,
-    model: model as any,
-    images,
-    aspectRatio: options.aspectRatio,
-    count: options.count || 1,
+  const response = await fetch('/api/studio/image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt,
+      model,
+      images,
+      aspectRatio: options.aspectRatio,
+      n: options.count || 1,
+    }),
   });
-  return result.urls;
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `图像生成失败: ${response.status}`);
+  }
+  const result = await response.json();
+  return result.images;
 };
 
-// 图像编辑
+// 图像编辑 (通过 API route)
 const editImageWithText = async (imageBase64: string, prompt: string, model: string): Promise<string> => {
-  return await gemini.editImage(imageBase64, prompt, model as any);
+  const results = await generateImageFromText(prompt, model, [imageBase64], { count: 1 });
+  return results[0];
 };
 
 // 视频生成返回类型
@@ -51,7 +62,7 @@ interface VideoGenResult {
 const generateVideo = async (
   prompt: string,
   model: string,
-  options: { aspectRatio?: string; count?: number; generationMode?: any; resolution?: string; duration?: number; videoConfig?: any } = {},
+  options: { aspectRatio?: string; count?: number; generationMode?: any; resolution?: string; duration?: number; videoConfig?: any; viduSubjects?: { id: string; images: string[] }[] } = {},
   inputImageBase64?: string | null,
   _videoInput?: any,
   referenceImages?: string[],
@@ -68,6 +79,7 @@ const generateVideo = async (
       images: inputImageBase64 ? [inputImageBase64] : referenceImages,
       imageRoles,
       videoConfig: options.videoConfig,
+      viduSubjects: options.viduSubjects, // Vidu 主体参考
     }),
   });
   if (!response.ok) {
@@ -1878,6 +1890,23 @@ export default function StudioTab() {
                 if (node.data.image && !inputImages.includes(node.data.image)) {
                     inputImages.unshift(node.data.image); // 优先放在最前面
                 }
+
+                // 解析 @主体 引用，将主体图片作为参考输入
+                console.log(`[ImageGen] Parsing subject refs - prompt: "${prompt}", subjects count: ${subjects.length}, subject names:`, subjects.map(s => s.name));
+                const subjectRefs = parseSubjectReferences(prompt, subjects);
+                console.log(`[ImageGen] parseSubjectReferences returned:`, subjectRefs.length, subjectRefs.map(s => ({ name: s.name, hasImage: !!s.primaryImage })));
+                if (subjectRefs.length > 0) {
+                    console.log(`[ImageGen] Found ${subjectRefs.length} subject references:`, subjectRefs.map(s => s.name));
+                    // 添加主体主要图片作为参考（插入到最前面）
+                    subjectRefs.forEach(ref => {
+                        if (!inputImages.includes(ref.primaryImage)) {
+                            inputImages.unshift(ref.primaryImage);
+                        }
+                    });
+                    // 清理提示词中的 @主体名称
+                    prompt = cleanSubjectReferences(prompt, subjects);
+                    console.log(`[ImageGen] Cleaned prompt: ${prompt.substring(0, 100)}...`);
+                }
                 console.log(`[ImageGen] Collected ${inputImages.length} input images for model ${node.data.model}`);
 
                 // 判断是否创建新节点：当且仅当节点本身已有素材时
@@ -2003,9 +2032,48 @@ export default function StudioTab() {
                 }
 
                 try {
-                    const strategy = await getGenerationStrategy(node, inputs, prompt);
                     const usedModel = node.data.model || 'veo3.1';
                     const usedAspectRatio = node.data.aspectRatio || '16:9';
+                    const isViduModel = usedModel.startsWith('vidu');
+
+                    // 解析 @主体 引用
+                    let processedPrompt = prompt;
+                    let subjectInputImage: string | null = null;
+                    let viduSubjects: { id: string; images: string[] }[] | undefined;
+
+                    const subjectRefs = parseSubjectReferences(prompt, subjects);
+                    if (subjectRefs.length > 0) {
+                        if (isViduModel) {
+                            // Vidu 场景：转换为 Vidu 主体格式
+                            console.log(`[VideoGen] Found ${subjectRefs.length} subject references for Vidu:`, subjectRefs.map(s => s.name));
+                            viduSubjects = subjectRefs.map(ref => ({
+                                id: ref.name, // 使用名称作为 ID，用于 prompt 中的 @引用
+                                images: ref.subject.images.map(img => img.base64).slice(0, 3), // Vidu 最多支持 3 张图片
+                            }));
+                            // 保留 prompt 中的 @主体名称，Vidu API 需要用它来关联
+                            processedPrompt = prompt;
+                            console.log(`[VideoGen] Vidu subjects:`, viduSubjects.map(s => ({ id: s.id, imageCount: s.images.length })));
+                        } else {
+                            // 非 Vidu 场景：将主体图片作为输入图
+                            console.log(`[VideoGen] Found ${subjectRefs.length} subject references for non-Vidu:`, subjectRefs.map(s => s.name));
+                            subjectInputImage = subjectRefs[0].primaryImage;
+                            processedPrompt = cleanSubjectReferences(prompt, subjects);
+                            console.log(`[VideoGen] Using subject image as input, cleaned prompt: ${processedPrompt.substring(0, 100)}...`);
+                        }
+                    }
+
+                    const strategy = await getGenerationStrategy(node, inputs, processedPrompt);
+
+                    // 如果有主体图片且策略没有提供输入图，使用主体图片
+                    const finalInputImage = strategy.inputImageForGeneration || subjectInputImage;
+
+                    // Vidu 主体参考模式：不使用首尾帧数据，避免冲突
+                    const useViduSubjectMode = isViduModel && viduSubjects && viduSubjects.length > 0;
+
+                    if (useViduSubjectMode) {
+                        console.log(`[VideoGen] Using Vidu subject reference mode, ignoring firstLastFrame data`);
+                        console.log(`[VideoGen] viduSubjects:`, JSON.stringify(viduSubjects.map(s => ({ id: s.id, imageCount: s.images.length }))));
+                    }
 
                     const res = await generateVideo(
                         strategy.finalPrompt,
@@ -2017,11 +2085,12 @@ export default function StudioTab() {
                             resolution: node.data.resolution,
                             duration: node.data.duration,  // 视频时长
                             videoConfig: node.data.videoConfig,  // 厂商扩展配置
+                            viduSubjects,  // Vidu 主体参考
                         },
-                        strategy.inputImageForGeneration,
+                        useViduSubjectMode ? null : finalInputImage,  // 主体模式不使用输入图
                         strategy.videoInput,
-                        strategy.referenceImages,
-                        strategy.imageRoles  // 图片角色（首尾帧）
+                        useViduSubjectMode ? undefined : strategy.referenceImages,  // 主体模式不使用首尾帧
+                        useViduSubjectMode ? undefined : strategy.imageRoles  // 主体模式不使用图片角色
                     );
 
                     if (shouldCreateNewNode && factoryNodeId) {
@@ -2118,9 +2187,38 @@ export default function StudioTab() {
                             : node.data.videoUri;
                     }
 
-                    const strategy = await getGenerationStrategy(node, inputs, prompt);
                     const usedModel = node.data.model || 'veo3.1';
                     const usedAspectRatio = node.data.aspectRatio || '16:9';
+                    const isViduModel = usedModel.startsWith('vidu');
+
+                    // 解析 @主体 引用
+                    let processedPrompt = prompt;
+                    let subjectInputImage: string | null = null;
+                    let viduSubjects: { id: string; images: string[] }[] | undefined;
+
+                    const subjectRefs = parseSubjectReferences(prompt, subjects);
+                    if (subjectRefs.length > 0) {
+                        if (isViduModel) {
+                            // Vidu 场景：转换为 Vidu 主体格式
+                            console.log(`[VideoFactory] Found ${subjectRefs.length} subject references for Vidu:`, subjectRefs.map(s => s.name));
+                            viduSubjects = subjectRefs.map(ref => ({
+                                id: ref.name,
+                                images: ref.subject.images.map(img => img.base64).slice(0, 3),
+                            }));
+                            processedPrompt = prompt;
+                        } else {
+                            // 非 Vidu 场景：将主体图片作为输入图
+                            console.log(`[VideoFactory] Found ${subjectRefs.length} subject references for non-Vidu:`, subjectRefs.map(s => s.name));
+                            subjectInputImage = subjectRefs[0].primaryImage;
+                            processedPrompt = cleanSubjectReferences(prompt, subjects);
+                        }
+                    }
+
+                    const strategy = await getGenerationStrategy(node, inputs, processedPrompt);
+                    const finalInputImage = strategy.inputImageForGeneration || subjectInputImage;
+
+                    // Vidu 主体参考模式：不使用首尾帧数据，避免冲突
+                    const useViduSubjectMode = isViduModel && viduSubjects && viduSubjects.length > 0;
 
                     const res = await generateVideo(
                         strategy.finalPrompt,
@@ -2132,11 +2230,12 @@ export default function StudioTab() {
                             resolution: node.data.resolution,
                             duration: node.data.duration,  // 视频时长
                             videoConfig: node.data.videoConfig,  // 厂商扩展配置
+                            viduSubjects,  // Vidu 主体参考
                         },
-                        strategy.inputImageForGeneration,
+                        useViduSubjectMode ? null : finalInputImage,  // 主体模式不使用输入图
                         videoInput || strategy.videoInput,
-                        strategy.referenceImages,
-                        strategy.imageRoles  // 图片角色（首尾帧）
+                        useViduSubjectMode ? undefined : strategy.referenceImages,  // 主体模式不使用首尾帧
+                        useViduSubjectMode ? undefined : strategy.imageRoles  // 主体模式不使用图片角色
                     );
 
                     if (shouldCreateNewNode && newFactoryNodeId) {
@@ -2676,6 +2775,23 @@ export default function StudioTab() {
                 }
                 return;
             } catch (err) { console.error("Drop failed", err); }
+        }
+
+        // 主体拖拽到画布 - 创建图片素材节点
+        const subjectData = e.dataTransfer.getData('application/subject');
+        if (subjectData) {
+            try {
+                const subject = JSON.parse(subjectData) as Subject;
+                const primaryImage = getPrimaryImage(subject);
+                if (primaryImage) {
+                    addNode(NodeType.IMAGE_GENERATOR, dropX - 210, dropY - 180, {
+                        image: primaryImage,
+                        prompt: subject.name,
+                        status: NodeStatus.SUCCESS,
+                    });
+                }
+                return;
+            } catch (err) { console.error("Subject drop failed", err); }
         }
 
         // Updated Multi-File Logic (9-Grid Support)

@@ -1,45 +1,52 @@
 /**
  * Studio 图像生成 API
  *
- * 使用统一的 provider 服务架构
- * 支持模型: Nano Banana, Seedream
+ * 统一图像生成入口，根据模型路由到不同服务：
+ * - Seedream: 火山引擎官方接口
+ * - 其他: OpenAI 兼容网关
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { generateImage, getProviderId } from '@/services/providers';
-import { SIZE_MAP } from '@/services/providers/seedream';
+import { generateImage } from '@/services/providers/image';
+import * as seedream from '@/services/providers/seedream';
 
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { prompt, model, images, aspectRatio, n, size, imageSize, responseFormat } = body;
+        const { prompt, model, images, aspectRatio, n, size, imageSize } = body;
 
         if (!prompt) {
             return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
         }
 
-        const providerId = getProviderId(model || 'nano-banana');
+        const usedModel = model || 'nano-banana';
+        console.log(`[Studio Image API] model: ${usedModel}, count: ${n || 1}`);
 
-        if (!providerId) {
-            return NextResponse.json({ error: `不支持的模型: ${model}` }, { status: 400 });
+        let urls: string[];
+
+        // Seedream 使用火山引擎官方接口
+        if (usedModel.includes('seedream')) {
+            const result = await seedream.generateImage({
+                prompt,
+                model: usedModel,
+                images,
+                aspectRatio,
+                n,
+                size,
+            });
+            urls = result.urls;
+        } else {
+            // 其他模型使用 OpenAI 兼容网关
+            const result = await generateImage({
+                prompt,
+                model: usedModel,
+                images,
+                aspectRatio,
+                count: n,
+                imageSize,
+            });
+            urls = result.urls;
         }
-
-        console.log(`[Studio Image API] Generating with model: ${model}, provider: ${providerId}, n: ${n}`);
-
-        // 确定最终尺寸
-        let finalSize = size;
-        if (providerId === 'seedream' && aspectRatio && SIZE_MAP[aspectRatio]) {
-            finalSize = SIZE_MAP[aspectRatio];
-        }
-
-        const urls = await generateImage({
-            prompt,
-            model: model || 'nano-banana',
-            aspectRatio,
-            images,
-            count: n,
-            size: finalSize,
-        });
 
         return NextResponse.json({
             success: true,
@@ -49,7 +56,6 @@ export async function POST(request: NextRequest) {
     } catch (error: any) {
         console.error('[Studio Image API] Error:', error);
 
-        // 提供更详细的错误信息
         const errorMessage = error.cause?.code === 'ENOTFOUND'
             ? `无法连接到API服务器: ${error.cause?.hostname}`
             : error.cause?.code === 'ECONNREFUSED'

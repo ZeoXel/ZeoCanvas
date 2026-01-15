@@ -6,13 +6,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { generateVideo, getProviderId } from '@/services/providers';
+import { generateVideo, getVideoProviderId } from '@/services/providers';
 import * as veoService from '@/services/providers/veo';
 
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { prompt, model, aspectRatio, duration, enhancePrompt, enableUpsample, images, imageRoles, videoConfig } = body;
+        const { prompt, model, aspectRatio, duration, enhancePrompt, images, imageRoles, videoConfig, viduSubjects } = body;
 
         if (!prompt) {
             return NextResponse.json({ error: 'prompt is required' }, { status: 400 });
@@ -21,13 +21,13 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'model is required' }, { status: 400 });
         }
 
-        const providerId = getProviderId(model);
+        const providerId = getVideoProviderId(model);
 
         if (!providerId) {
-            return NextResponse.json({ error: `不支持的模型: ${model}` }, { status: 400 });
+            return NextResponse.json({ error: `不支持的视频模型: ${model}` }, { status: 400 });
         }
 
-        console.log(`[Studio Video API] Creating task with model: ${model}, provider: ${providerId}, images: ${images?.length || 0}, config:`, videoConfig);
+        console.log(`[Studio Video API] model: ${model}, provider: ${providerId}, images: ${images?.length || 0}, viduSubjects: ${viduSubjects?.length || 0}`);
 
         const videoUrl = await generateVideo(
             {
@@ -39,6 +39,7 @@ export async function POST(request: NextRequest) {
                 imageRoles,
                 enhancePrompt,
                 videoConfig,  // 厂商扩展配置
+                viduSubjects, // Vidu 主体参考
             },
             (progress) => {
                 console.log(`[Studio Video API] Progress: ${progress}`);

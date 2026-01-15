@@ -102,6 +102,7 @@ export async function generateViduMultiFrame(
         const { start_image, image_settings } = convertFramesToViduFormat(compressedFrames);
 
         const requestBody = {
+            mode: 'multiframe',  // 使用多帧模式
             model: config.model || 'viduq2-turbo',
             start_image,
             image_settings,
@@ -115,7 +116,7 @@ export async function generateViduMultiFrame(
         const bodySize = JSON.stringify(requestBody).length;
         console.log(`[Vidu] Request body size: ${(bodySize / 1024 / 1024).toFixed(2)}MB`);
 
-        const response = await fetch('/api/video/vidu-multiframe', {
+        const response = await fetch('/api/video/vidu', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -155,7 +156,7 @@ export async function generateViduMultiFrame(
  */
 export async function queryViduTask(taskId: string): Promise<ViduTaskResponse> {
     try {
-        const response = await fetch(`/api/video/vidu-multiframe?task_id=${taskId}`, {
+        const response = await fetch(`/api/video/vidu?task_id=${taskId}`, {
             method: 'GET',
         });
 
