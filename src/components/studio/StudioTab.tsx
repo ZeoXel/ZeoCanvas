@@ -2070,7 +2070,7 @@ export default function StudioTab() {
                     // Vidu 主体参考模式：不使用首尾帧数据，避免冲突
                     const useViduSubjectMode = isViduModel && viduSubjects && viduSubjects.length > 0;
 
-                    if (useViduSubjectMode) {
+                    if (useViduSubjectMode && viduSubjects) {
                         console.log(`[VideoGen] Using Vidu subject reference mode, ignoring firstLastFrame data`);
                         console.log(`[VideoGen] viduSubjects:`, JSON.stringify(viduSubjects.map(s => ({ id: s.id, imageCount: s.images.length }))));
                     }
