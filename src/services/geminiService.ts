@@ -16,17 +16,20 @@ const isExternalModel = (model: string): boolean => {
     if (model.includes('seedream') || model.includes('doubao')) return true;
     // Nano-banana 模型
     if (model.includes('nano-banana')) return true;
+    // Vidu Q2 系列视频模型
+    if (model.startsWith('vidu')) return true;
     return false;
 };
 
 /**
  * 判断模型类型
  */
-const getExternalModelType = (model: string): 'veo' | 'seedance' | 'seedream' | 'nano-banana' | 'gemini' => {
+const getExternalModelType = (model: string): 'veo' | 'seedance' | 'seedream' | 'nano-banana' | 'vidu' | 'gemini' => {
     if (model.startsWith('veo') && !model.includes('generate-preview')) return 'veo';
     if (model.includes('seedance')) return 'seedance';
     if (model.includes('seedream') || model.includes('doubao')) return 'seedream';
     if (model.includes('nano-banana')) return 'nano-banana';
+    if (model.startsWith('vidu')) return 'vidu';
     return 'gemini';
 };
 
@@ -525,7 +528,7 @@ export const generateImageFromText = async (
 export const generateVideo = async (
     prompt: string,
     model: string,
-    options: { aspectRatio?: string, count?: number, generationMode?: VideoGenerationMode, resolution?: string, duration?: number } = {},
+    options: { aspectRatio?: string, count?: number, generationMode?: VideoGenerationMode, resolution?: string, duration?: number, videoConfig?: any } = {},
     inputImageBase64?: string | null,
     videoInput?: any,
     referenceImages?: string[],
@@ -558,6 +561,7 @@ export const generateVideo = async (
                     enableUpsample: options.resolution === '1080p',
                     images: images.length > 0 ? images : undefined,
                     imageRoles: imageRoles,  // 图片角色（首尾帧：first_frame/last_frame）
+                    videoConfig: options.videoConfig,  // 厂商扩展配置
                 }),
             });
 
@@ -587,6 +591,72 @@ export const generateVideo = async (
             } catch (imgErr) {
                 throw new Error("视频生成失败且图像回退也失败: " + getErrorMessage(e));
             }
+        }
+    }
+
+    // --- Vidu Q2 系列视频 API 路由 ---
+    if (isExternalModel(model) && modelType === 'vidu') {
+        try {
+            // 判断生成模式
+            const isFirstLastFrameMode = options.generationMode === 'FIRST_LAST_FRAME' && referenceImages && referenceImages.length >= 2;
+            const hasInputImage = !!inputImageBase64;
+
+            // 确定 Vidu 模式
+            let viduMode: 'text2video' | 'img2video' | 'start-end' = 'text2video';
+            let images: string[] = [];
+
+            if (isFirstLastFrameMode) {
+                viduMode = 'start-end';
+                images = referenceImages!;  // [首帧, 尾帧]
+            } else if (hasInputImage) {
+                viduMode = 'img2video';
+                images = [inputImageBase64!];
+            }
+
+            console.log(`[Vidu] Starting video generation with model: ${model}, mode: ${viduMode}, images: ${images.length}`);
+
+            const videoConfig = options.videoConfig || {};
+
+            const response = await fetch('/api/video/vidu', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    mode: viduMode,
+                    model,
+                    prompt,
+                    images: images.length > 0 ? images : undefined,
+                    duration: options.duration,
+                    // resolution 为可选参数，只在明确指定时传递，否则使用 API 默认值 (720p)
+                    resolution: options.resolution || undefined,
+                    aspect_ratio: options.aspectRatio || '16:9',
+                    // Vidu 扩展配置
+                    movement_amplitude: videoConfig.movement_amplitude,
+                    bgm: videoConfig.bgm,
+                    audio: videoConfig.audio,
+                    voice_id: videoConfig.voice_id,
+                    watermark: false,
+                    wait_result: true,
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error || `Vidu API错误: ${response.status}`);
+            }
+
+            const result = await response.json();
+            if (result.videoUrl) {
+                return {
+                    uri: result.videoUrl,
+                    isFallbackImage: false,
+                    videoMetadata: { taskId: result.taskId, state: result.state },
+                    uris: [result.videoUrl],
+                };
+            }
+            throw new Error('Vidu 未返回视频URL');
+        } catch (e: any) {
+            console.error(`[Vidu] Video Gen Error:`, e);
+            throw new Error("Vidu 视频生成失败: " + getErrorMessage(e));
         }
     }
 

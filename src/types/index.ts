@@ -7,7 +7,8 @@ export enum NodeType {
   VIDEO_GENERATOR = 'VIDEO_GENERATOR',
   VIDEO_FACTORY = 'VIDEO_FACTORY', // 视频工厂：展示和编辑视频结果
   IMAGE_EDITOR = 'IMAGE_EDITOR',
-  AUDIO_GENERATOR = 'AUDIO_GENERATOR',
+  AUDIO_GENERATOR = 'AUDIO_GENERATOR', // Suno 音乐生成
+  VOICE_GENERATOR = 'VOICE_GENERATOR', // MiniMax 语音合成
   MULTI_FRAME_VIDEO = 'MULTI_FRAME_VIDEO', // 智能多帧视频：多张关键帧+转场生成视频
 }
 
@@ -110,6 +111,24 @@ export interface AppNode {
     firstLastFrameData?: {
       firstFrame?: string;  // Base64 首帧图片
       lastFrame?: string;   // Base64 尾帧图片
+    };
+
+    // Video Provider Extended Config (视频厂商扩展配置)
+    videoConfig?: {
+      // Vidu Q2 系列 (注：Q2 不支持 style 参数)
+      movement_amplitude?: 'auto' | 'small' | 'medium' | 'large';  // 图生/首尾帧
+      bgm?: boolean;           // 背景音乐 (首尾帧/文生)
+      audio?: boolean;         // 音视频直出 (仅图生)
+      voice_id?: string;       // 音色 ID (audio=true 时)
+      // Seedance
+      return_last_frame?: boolean;  // 返回尾帧
+      generate_audio?: boolean;     // 有声视频 (1.5 pro)
+      camera_fixed?: boolean;       // 固定摄像头
+      watermark?: boolean;          // 水印
+      service_tier?: 'default' | 'flex';  // 服务等级
+      seed?: number;                // 随机种子
+      // Veo
+      enhance_prompt?: boolean;     // 增强提示词
     };
   };
   inputs: string[]; // IDs of nodes this node connects FROM

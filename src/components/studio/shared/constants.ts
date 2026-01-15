@@ -3,7 +3,7 @@
 export const IMAGE_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 export const VIDEO_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 export const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
-export const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
+export const VIDEO_RESOLUTIONS = ['540p', '720p', '1080p'];
 export const IMAGE_COUNTS = [1, 2, 3, 4];
 export const VIDEO_COUNTS = [1, 2, 3, 4];
 
@@ -80,25 +80,48 @@ export interface VideoDurationConfig {
 }
 
 export const VIDEO_DURATION_CONFIG: Record<string, VideoDurationConfig> = {
+    // Seedance
     'doubao-seedance-1-5-pro-251215': {
         options: [-1, 4, 5, 6, 7, 8, 9, 10, 11, 12],
         default: 5,
         supportsFirstLastFrame: true,
     },
+    // Veo
     'veo3.1': {
         options: [5, 6, 7, 8],
         default: 8,
-        supportsFirstLastFrame: true,  // 支持首尾帧
+        supportsFirstLastFrame: true,
     },
     'veo3.1-pro': {
         options: [5, 6, 7, 8],
         default: 8,
-        supportsFirstLastFrame: true,  // 支持首尾帧
+        supportsFirstLastFrame: true,
     },
     'veo3.1-components': {
         options: [5, 6, 7, 8],
         default: 8,
-        supportsFirstLastFrame: false,  // 多图参考模式，非首尾帧
+        supportsFirstLastFrame: false,
+    },
+    // Vidu Q2 系列
+    'viduq2-pro': {
+        options: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        default: 5,
+        supportsFirstLastFrame: true,  // 首尾帧最多 8 秒
+    },
+    'viduq2-turbo': {
+        options: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        default: 5,
+        supportsFirstLastFrame: true,
+    },
+    'viduq2-pro-fast': {
+        options: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        default: 5,
+        supportsFirstLastFrame: true,
+    },
+    'viduq2': {
+        options: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        default: 5,
+        supportsFirstLastFrame: false,  // 仅文生视频/参考生视频
     },
 };
 
@@ -115,4 +138,75 @@ export const getDefaultDuration = (model?: string): number => {
 // 检查模型是否支持首尾帧
 export const supportsFirstLastFrame = (model?: string): boolean => {
     return VIDEO_DURATION_CONFIG[model || '']?.supportsFirstLastFrame || false;
+};
+
+// 视频生成模式
+export type VideoGenerationMode = 'text2video' | 'img2video' | 'start-end';
+
+// 视频模型分辨率配置
+export interface VideoResolutionConfig {
+    text2video: string[];    // 文生视频可用分辨率
+    img2video: string[];     // 图生视频可用分辨率
+    'start-end': string[];   // 首尾帧可用分辨率
+    default: string;         // 默认分辨率
+}
+
+export const VIDEO_RESOLUTION_CONFIG: Record<string, VideoResolutionConfig> = {
+    // Vidu Q2 系列
+    'viduq2-pro': {
+        text2video: ['540p', '720p', '1080p'],
+        img2video: ['540p', '720p', '1080p'],
+        'start-end': ['540p', '720p', '1080p'],
+        default: '720p',
+    },
+    'viduq2-turbo': {
+        text2video: ['540p', '720p', '1080p'],
+        img2video: ['540p', '720p', '1080p'],
+        'start-end': ['540p', '720p', '1080p'],
+        default: '720p',
+    },
+    'viduq2-pro-fast': {
+        text2video: ['720p', '1080p'],      // 不支持 540p
+        img2video: ['720p', '1080p'],       // 不支持 540p
+        'start-end': ['720p', '1080p'],     // 不支持 540p
+        default: '720p',
+    },
+    'viduq2': {
+        text2video: ['540p', '720p', '1080p'],
+        img2video: ['540p', '720p', '1080p'],
+        'start-end': ['540p', '720p', '1080p'],  // 实际不支持首尾帧，但保留配置
+        default: '720p',
+    },
+    // Seedance - 所有模式支持相同分辨率
+    'doubao-seedance-1-5-pro-251215': {
+        text2video: ['540p', '720p', '1080p'],
+        img2video: ['540p', '720p', '1080p'],
+        'start-end': ['540p', '720p', '1080p'],
+        default: '720p',
+    },
+    // Veo - 主要用 720p/1080p
+    'veo3.1': {
+        text2video: ['720p', '1080p'],
+        img2video: ['720p', '1080p'],
+        'start-end': ['720p', '1080p'],
+        default: '720p',
+    },
+    'veo3.1-pro': {
+        text2video: ['720p', '1080p'],
+        img2video: ['720p', '1080p'],
+        'start-end': ['720p', '1080p'],
+        default: '1080p',
+    },
+};
+
+// 获取模型在指定模式下的可用分辨率
+export const getVideoResolutions = (model?: string, mode?: VideoGenerationMode): string[] => {
+    const config = VIDEO_RESOLUTION_CONFIG[model || ''];
+    if (!config) return VIDEO_RESOLUTIONS;  // 默认全部分辨率
+    return config[mode || 'text2video'] || VIDEO_RESOLUTIONS;
+};
+
+// 获取模型的默认分辨率
+export const getDefaultVideoResolution = (model?: string): string => {
+    return VIDEO_RESOLUTION_CONFIG[model || '']?.default || '720p';
 };

@@ -7,6 +7,9 @@ export { InputThumbnails } from './InputThumbnails';
 
 export { AudioVisualizer } from './AudioVisualizer';
 
+export { AudioConfigPanel } from './AudioConfigPanel';
+export type { AudioConfigPanelProps } from './AudioConfigPanel';
+
 export * from './constants';
 
 // Types

@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Image from 'next/image';
 import { Node } from './Node';
 import { SidebarDock } from './SidebarDock';
+import { useViewport, useInteraction, useCanvasData, useCanvasHistory } from '@/hooks/canvas';
+import { useBrand } from '@/hooks/useBrand';
 import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
 import { ImageEditOverlay } from './ImageEditOverlay';
@@ -15,16 +17,76 @@ import { getGenerationStrategy } from '@/services/videoStrategies';
 import { createMusicCustom, SunoSongInfo } from '@/services/sunoService';
 import { synthesizeSpeech, MinimaxGenerateParams } from '@/services/minimaxService';
 import { saveToStorage, loadFromStorage } from '@/services/storage';
+import { getMenuStructure, getDefaultModelId, type ProviderDefinition } from '@/config/models';
 import {
     Plus, Copy, Trash2, Type, Image as ImageIcon, Video as VideoIcon,
     MousePointerClick, LayoutTemplate, X, RefreshCw, Film, Brush, Mic2, Music, FileSearch,
-    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan
+    Minus, FolderHeart, Unplug, Sparkles, ChevronLeft, ChevronRight, Scan,
+    Undo2, Redo2, ChevronRightIcon, Speech
 } from 'lucide-react';
 
 // Apple Physics Curve
 const SPRING = "cubic-bezier(0.32, 0.72, 0, 1)";
 const SNAP_THRESHOLD = 8; // Pixels for magnetic snap
 const COLLISION_PADDING = 24; // Spacing when nodes bounce off each other
+
+// ============================================================================
+// Node Config Persistence - 记住用户上次使用的节点配置
+// ============================================================================
+const NODE_CONFIG_STORAGE_KEY = 'zeocanvas_node_configs';
+
+// 需要记忆的配置字段（按节点类型）
+const REMEMBERED_FIELDS: Record<string, string[]> = {
+    [NodeType.IMAGE_GENERATOR]: ['model', 'aspectRatio', 'resolution', 'imageCount'],
+    [NodeType.VIDEO_GENERATOR]: ['model', 'aspectRatio', 'resolution', 'duration', 'videoConfig', 'generationMode'],
+    [NodeType.VIDEO_FACTORY]: ['model', 'aspectRatio', 'resolution', 'duration', 'videoConfig', 'generationMode'],
+    [NodeType.MULTI_FRAME_VIDEO]: ['aspectRatio', 'multiFrameData'],
+    [NodeType.AUDIO_GENERATOR]: ['model', 'audioMode', 'musicConfig', 'voiceConfig'],
+    [NodeType.PROMPT_INPUT]: ['model'],
+};
+
+// 保存节点配置到 localStorage
+const saveNodeConfig = (nodeType: string, config: Record<string, any>) => {
+    try {
+        const fields = REMEMBERED_FIELDS[nodeType];
+        if (!fields) return;
+
+        const stored = JSON.parse(localStorage.getItem(NODE_CONFIG_STORAGE_KEY) || '{}');
+        const filteredConfig: Record<string, any> = {};
+
+        fields.forEach(field => {
+            if (config[field] !== undefined) {
+                // 特殊处理 multiFrameData：只保存配置，不保存 frames 数据
+                if (field === 'multiFrameData' && config.multiFrameData) {
+                    filteredConfig.multiFrameData = {
+                        viduModel: config.multiFrameData.viduModel,
+                        viduResolution: config.multiFrameData.viduResolution,
+                    };
+                } else {
+                    filteredConfig[field] = config[field];
+                }
+            }
+        });
+
+        if (Object.keys(filteredConfig).length > 0) {
+            stored[nodeType] = { ...stored[nodeType], ...filteredConfig };
+            localStorage.setItem(NODE_CONFIG_STORAGE_KEY, JSON.stringify(stored));
+        }
+    } catch (e) {
+        console.warn('Failed to save node config:', e);
+    }
+};
+
+// 从 localStorage 读取节点配置
+const loadNodeConfig = (nodeType: string): Record<string, any> => {
+    try {
+        const stored = JSON.parse(localStorage.getItem(NODE_CONFIG_STORAGE_KEY) || '{}');
+        return stored[nodeType] || {};
+    } catch (e) {
+        console.warn('Failed to load node config:', e);
+        return {};
+    }
+};
 
 // 连接点配置 - 与 Node.tsx 中的连接点位置保持一致
 const PORT_OFFSET = 12; // 连接点中心到节点边缘的基础距离
@@ -170,6 +232,79 @@ const ExpandedView = ({ media, onClose }: { media: any, onClose: () => void }) =
 };
 
 export default function StudioTab() {
+    // === HOOKS ===
+    // Brand Config
+    const brand = useBrand();
+
+    // Viewport Hook - 替换原有的 scale, pan, scaleRef, panRef
+    const {
+        scale, pan, setScale, setPan,
+        scaleRef, panRef,
+        screenToCanvas: viewportScreenToCanvas,
+    } = useViewport();
+
+    // Interaction Hook - 交互状态机
+    const {
+        mode,
+        modeRef,
+        selection,
+        setSelection,
+        selectNodes,
+        selectGroups,
+        clearSelection,
+        mousePos, setMousePos,
+        isSpacePressed, setIsSpacePressed,
+        // Selection rect
+        startSelecting,
+        updateSelecting,
+        finishInteraction,
+        isSelecting,
+        // Connecting
+        startConnecting,
+        isConnecting,
+        // Panning
+        startPanning,
+        updatePanning,
+        isPanning,
+    } = useInteraction();
+
+    // 解构选择状态（兼容现有代码）
+    const selectedNodeIds = selection.nodeIds;
+    const selectedGroupIds = selection.groupIds;
+    // 兼容 selectionRect（从 mode 中提取）
+    const selectionRect = mode.type === 'selecting' ? mode.rect : null;
+    // 兼容 connectionStart（从 mode 中提取）
+    const connectionStart = mode.type === 'connecting' ? mode.start : null;
+    // Helper: 从 modeRef 获取 connectionStart（用于事件处理器中避免闭包问题）
+    const getConnectionStartRef = useCallback(() => {
+        const currentMode = modeRef.current;
+        return currentMode.type === 'connecting' ? currentMode.start : null;
+    }, [modeRef]);
+    // 兼容 isDraggingCanvas（从 isPanning 别名）
+    const isDraggingCanvas = isPanning;
+    // Helper: 从 modeRef 获取 panning 的 lastPos（用于事件处理器中避免闭包问题）
+    const getPanningLastPos = useCallback(() => {
+        const currentMode = modeRef.current;
+        return currentMode.type === 'panning' ? currentMode.lastPos : null;
+    }, [modeRef]);
+
+    // Canvas Data Hook - 画布数据 (nodes, connections, groups)
+    const {
+        nodes, setNodes, nodesRef,
+        connections, setConnections, connectionsRef,
+        groups, setGroups, groupsRef,
+        loadData,
+    } = useCanvasData();
+
+    // History Hook - 撤销/重做
+    const {
+        historyRef, historyIndexRef,
+        canUndo, canRedo,
+        saveSnapshot,
+        undo: undoHistory,
+        redo: redoHistory,
+    } = useCanvasHistory();
+
     // --- Global App State ---
     const [workflows, setWorkflows] = useState<Workflow[]>([]);
     const [assetHistory, setAssetHistory] = useState<any[]>([]);
@@ -203,40 +338,25 @@ export default function StudioTab() {
     const [currentCanvasId, setCurrentCanvasId] = useState<string | null>(null);
 
     // --- Canvas State ---
-    const [nodes, setNodes] = useState<AppNode[]>([]);
-    const [connections, setConnections] = useState<Connection[]>([]);
-    const [groups, setGroups] = useState<Group[]>([]);
+    // nodes, setNodes, connections, setConnections, groups, setGroups 已迁移到 useCanvasData Hook
+    // history, historyIndex, historyRef, historyIndexRef 已迁移到 useCanvasHistory Hook
     const [clipboard, setClipboard] = useState<AppNode | null>(null);
 
-    // History
-    const [history, setHistory] = useState<any[]>([]);
-    const [historyIndex, setHistoryIndex] = useState(-1);
-
-    // Viewport
-    const [scale, setScale] = useState<number>(1);
-    const [pan, setPan] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
-    const [isDraggingCanvas, setIsDraggingCanvas] = useState(false);
+    // Viewport (scale, pan 已迁移到 useViewport, mousePos 已迁移到 useInteraction)
+    // isDraggingCanvas 已迁移到 useInteraction.isPanning
+    // lastMousePos (panning) 已迁移到 useInteraction.mode.lastPos
+    // 保留 lastMousePos 仅用于 draggingNode fallback 场景
     const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
-    const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
-    // Interaction / Selection
-    const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]); // Changed to Array for multi-select
-    const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // 支持多分组选中
+    // Interaction / Selection (已迁移到 useInteraction)
     const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
     const [draggingNodeParentGroupId, setDraggingNodeParentGroupId] = useState<string | null>(null);
     const [draggingGroup, setDraggingGroup] = useState<any>(null);
     const [resizingGroupId, setResizingGroupId] = useState<string | null>(null);
     const [activeGroupNodeIds, setActiveGroupNodeIds] = useState<string[]>([]);
-    // Connection start stores both the node id and the actual screen position of the port
-    const [connectionStart, setConnectionStart] = useState<{
-        id: string,
-        portType: 'input' | 'output',
-        // Screen coordinates of the port center (for converting to canvas coords)
-        screenX: number,
-        screenY: number
-    } | null>(null);
-    const [selectionRect, setSelectionRect] = useState<any>(null);
-    const [isSpacePressed, setIsSpacePressed] = useState(false); // Track space key for canvas drag
+    // connectionStart 已迁移到 useInteraction.mode
+    // selectionRect 已迁移到 useInteraction.mode
+    // isSpacePressed 已迁移到 useInteraction
 
     // Node Resizing
     const [resizingNodeId, setResizingNodeId] = useState<string | null>(null);
@@ -268,12 +388,9 @@ export default function StudioTab() {
     } | null>(null);
 
     // Refs for closures
-    const nodesRef = useRef(nodes);
-    const connectionsRef = useRef(connections);
-    const groupsRef = useRef(groups);
-    const historyRef = useRef(history);
-    const historyIndexRef = useRef(historyIndex);
-    const connectionStartRef = useRef(connectionStart);
+    // nodesRef, connectionsRef, groupsRef 已迁移到 useCanvasData Hook
+    // historyRef, historyIndexRef 已迁移到 useCanvasHistory Hook
+    // connectionStartRef 已迁移：使用 modeRef 获取 connectionStart
     const rafRef = useRef<number | null>(null); // For RAF Throttling
     const canvasContainerRef = useRef<HTMLDivElement>(null); // Canvas container ref for coordinate offset
     const nodeRefsMap = useRef<Map<string, HTMLDivElement>>(new Map()); // 节点 DOM 引用，用于直接操作
@@ -346,10 +463,8 @@ export default function StudioTab() {
         return { x: clientX - rect.left, y: clientY - rect.top };
     }, []);
 
-    useEffect(() => {
-        nodesRef.current = nodes; connectionsRef.current = connections; groupsRef.current = groups;
-        historyRef.current = history; historyIndexRef.current = historyIndex; connectionStartRef.current = connectionStart;
-    }, [nodes, connections, groups, history, historyIndex, connectionStart]);
+    // nodesRef, connectionsRef, groupsRef 的同步已由 useCanvasData 内部处理
+    // historyRef, historyIndexRef 的同步已由 useCanvasHistory 内部处理
 
     // --- Persistence ---
     useEffect(() => {
@@ -583,6 +698,7 @@ export default function StudioTab() {
             case NodeType.VIDEO_GENERATOR: return '视频生成';
             case NodeType.VIDEO_FACTORY: return '视频工厂';
             case NodeType.AUDIO_GENERATOR: return '灵感音乐';
+            case NodeType.VOICE_GENERATOR: return '语音合成';
             case NodeType.IMAGE_EDITOR: return '图像编辑';
             case NodeType.MULTI_FRAME_VIDEO: return '智能多帧';
             default: return t;
@@ -596,7 +712,8 @@ export default function StudioTab() {
             case NodeType.IMAGE_GENERATOR: return ImageIcon;
             case NodeType.VIDEO_GENERATOR: return Film;
             case NodeType.VIDEO_FACTORY: return VideoIcon;
-            case NodeType.AUDIO_GENERATOR: return Mic2;
+            case NodeType.AUDIO_GENERATOR: return Music;
+            case NodeType.VOICE_GENERATOR: return Speech;
             case NodeType.IMAGE_EDITOR: return Brush;
             case NodeType.MULTI_FRAME_VIDEO: return Scan;
             default: return Plus;
@@ -640,52 +757,103 @@ export default function StudioTab() {
         setScale(newScale);
     }, [nodes]);
 
+    // 使用 useCanvasHistory 的 saveSnapshot
     const saveHistory = useCallback(() => {
         try {
-            const currentStep = { nodes: JSON.parse(JSON.stringify(nodesRef.current)), connections: JSON.parse(JSON.stringify(connectionsRef.current)), groups: JSON.parse(JSON.stringify(groupsRef.current)) };
-            const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
-            newHistory.push(currentStep); if (newHistory.length > 50) newHistory.shift();
-            setHistory(newHistory); setHistoryIndex(newHistory.length - 1);
+            saveSnapshot({
+                nodes: nodesRef.current,
+                connections: connectionsRef.current,
+                groups: groupsRef.current,
+            });
         } catch (e) {
             console.warn("History save failed:", e);
         }
-    }, []);
+    }, [saveSnapshot, nodesRef, connectionsRef, groupsRef]);
 
+    // 使用 useCanvasHistory 的 undo 和 useCanvasData 的 loadData
     const undo = useCallback(() => {
-        const idx = historyIndexRef.current; if (idx > 0) { const prev = historyRef.current[idx - 1]; setNodes(prev.nodes); setConnections(prev.connections); setGroups(prev.groups); setHistoryIndex(idx - 1); }
-    }, []);
+        const prev = undoHistory();
+        if (prev) loadData(prev);
+    }, [undoHistory, loadData]);
+
+    // redo 功能 (可选)
+    const redo = useCallback(() => {
+        const next = redoHistory();
+        if (next) loadData(next);
+    }, [redoHistory, loadData]);
 
     const deleteNodes = useCallback((ids: string[]) => {
         if (ids.length === 0) return;
         saveHistory();
         setNodes(p => p.filter(n => !ids.includes(n.id)).map(n => ({ ...n, inputs: n.inputs.filter(i => !ids.includes(i)) })));
         setConnections(p => p.filter(c => !ids.includes(c.from) && !ids.includes(c.to)));
-        setSelectedNodeIds([]);
-    }, [saveHistory]);
+        selectNodes([]);
+    }, [saveHistory, selectNodes]);
 
-    const addNode = useCallback((type: NodeType, x?: number, y?: number, initialData?: any) => {
+    const addNode = useCallback((type: NodeType, x?: number, y?: number, initialData?: any, modelId?: string) => {
         // IMAGE_EDITOR type removed - use ImageEditOverlay on existing images instead
 
         try { saveHistory(); } catch (e) { }
 
+        // 读取用户上次使用的配置
+        const savedConfig = loadNodeConfig(type);
+
         // 确定音频节点的默认模式和模型
-        const defaultAudioMode = initialData?.audioMode || 'music';
+        const defaultAudioMode = initialData?.audioMode || savedConfig.audioMode || 'music';
         const defaultAudioModel = defaultAudioMode === 'music' ? 'suno-v4' : 'speech-2.6-hd';
 
+        // 判断两个模型是否属于同一厂商
+        const isSameProvider = (model1?: string, model2?: string): boolean => {
+            if (!model1 || !model2) return false;
+            // 根据模型名前缀判断厂商
+            const getProvider = (m: string) => {
+                if (m.startsWith('veo')) return 'veo';
+                if (m.startsWith('vidu')) return 'vidu';
+                if (m.startsWith('doubao-seed')) return 'doubao';
+                if (m.startsWith('nano-banana')) return 'nano';
+                if (m.startsWith('gemini')) return 'gemini';
+                if (m.startsWith('suno')) return 'suno';
+                if (m.startsWith('speech')) return 'minimax';
+                return m.split('-')[0]; // fallback: 使用第一段作为厂商标识
+            };
+            return getProvider(model1) === getProvider(model2);
+        };
+
+        // 如果传入了 modelId 且与保存的配置属于同一厂商，使用保存的配置；否则使用传入的 modelId
+        const resolveModel = () => {
+            if (modelId && savedConfig.model && isSameProvider(modelId, savedConfig.model)) {
+                return savedConfig.model; // 同厂商，使用保存的配置
+            }
+            if (modelId) return modelId; // 不同厂商或无保存配置，使用传入的 modelId
+            if (savedConfig.model) return savedConfig.model; // 无传入 modelId，使用保存的配置
+            if (type === NodeType.VIDEO_GENERATOR) return 'veo3.1';
+            if (type === NodeType.AUDIO_GENERATOR) return 'suno-v4';
+            if (type === NodeType.VOICE_GENERATOR) return 'speech-2.6-hd';
+            if (type.includes('IMAGE')) return 'doubao-seedream-4-5-251128';
+            return 'gemini-2.5-flash';
+        };
+
+        // 默认比例：优先使用保存的配置
+        const defaultAspectRatio = savedConfig.aspectRatio ||
+            ((type === NodeType.IMAGE_GENERATOR || type === NodeType.VIDEO_GENERATOR || type === NodeType.VIDEO_FACTORY || type === NodeType.MULTI_FRAME_VIDEO) ? '16:9' : undefined);
+
         const defaults: any = {
-            model: type === NodeType.VIDEO_GENERATOR ? 'veo3.1' :
-                type === NodeType.AUDIO_GENERATOR ? defaultAudioModel :
-                    type.includes('IMAGE') ? 'doubao-seedream-4-5-251128' :
-                        'gemini-2.5-flash',
-            generationMode: type === NodeType.VIDEO_GENERATOR ? 'DEFAULT' : undefined,
-            // 图像/视频节点默认比例为 16:9
-            aspectRatio: (type === NodeType.IMAGE_GENERATOR || type === NodeType.VIDEO_GENERATOR || type === NodeType.VIDEO_FACTORY || type === NodeType.MULTI_FRAME_VIDEO) ? '16:9' : undefined,
-            // 音频节点默认配置
-            audioMode: type === NodeType.AUDIO_GENERATOR ? defaultAudioMode : undefined,
-            musicConfig: type === NodeType.AUDIO_GENERATOR ? { mv: 'chirp-v4', tags: 'pop, catchy' } : undefined,
-            voiceConfig: type === NodeType.AUDIO_GENERATOR ? { voiceId: 'female-shaonv', speed: 1, emotion: 'calm' } : undefined,
-            // 多帧视频节点默认配置
-            multiFrameData: type === NodeType.MULTI_FRAME_VIDEO ? { frames: [], viduModel: 'viduq2-turbo', viduResolution: '720p' } : undefined,
+            model: resolveModel(),
+            generationMode: savedConfig.generationMode || (type === NodeType.VIDEO_GENERATOR ? 'DEFAULT' : undefined),
+            aspectRatio: defaultAspectRatio,
+            resolution: savedConfig.resolution,
+            duration: savedConfig.duration,
+            videoConfig: savedConfig.videoConfig,
+            imageCount: savedConfig.imageCount,
+            // 音频节点默认配置（合并保存的配置）
+            musicConfig: type === NodeType.AUDIO_GENERATOR ? { mv: 'chirp-v4', tags: 'pop, catchy', ...savedConfig.musicConfig } : undefined,
+            voiceConfig: type === NodeType.VOICE_GENERATOR ? { voiceId: 'female-shaonv', speed: 1, emotion: 'calm', ...savedConfig.voiceConfig } : undefined,
+            // 多帧视频节点默认配置（合并保存的配置）
+            multiFrameData: type === NodeType.MULTI_FRAME_VIDEO ? {
+                frames: [],
+                viduModel: savedConfig.multiFrameData?.viduModel || 'viduq2-turbo',
+                viduResolution: savedConfig.multiFrameData?.viduResolution || '720p'
+            } : undefined,
             ...initialData
         };
 
@@ -697,6 +865,7 @@ export default function StudioTab() {
             [NodeType.VIDEO_GENERATOR]: '视频生成',
             [NodeType.VIDEO_FACTORY]: '视频工厂',
             [NodeType.AUDIO_GENERATOR]: '灵感音乐',
+            [NodeType.VOICE_GENERATOR]: '语音合成',
             [NodeType.IMAGE_EDITOR]: '图像编辑',
             [NodeType.MULTI_FRAME_VIDEO]: '智能多帧'
         };
@@ -709,7 +878,7 @@ export default function StudioTab() {
         // 计算节点预估高度并找到不重叠的位置
         const nodeWidth = 420;
         const [rw, rh] = (defaults.aspectRatio || '16:9').split(':').map(Number);
-        const nodeHeight = type === NodeType.AUDIO_GENERATOR ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
+        const nodeHeight = type === NodeType.AUDIO_GENERATOR || type === NodeType.VOICE_GENERATOR ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
             type === NodeType.PROMPT_INPUT ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
                 type === NodeType.MULTI_FRAME_VIDEO ? Math.round(nodeWidth * 9 / 16) : // 16:9 比例
                     (nodeWidth * rh / rw);
@@ -856,8 +1025,8 @@ export default function StudioTab() {
 
         setNodes(prev => [...prev, newNode]);
         // 选中新创建的节点
-        setSelectedNodeIds([newNode.id]);
-    }, [pan, scale, saveHistory, isPointOnEmptyCanvas]);
+        selectNodes([newNode.id]);
+    }, [pan, scale, saveHistory, isPointOnEmptyCanvas, selectNodes]);
 
     // 批量上传素材：创建多个纵向排布的节点并用分组框包裹
     const handleBatchUpload = useCallback(async (files: File[], type: 'image' | 'video', sourceNodeId: string) => {
@@ -973,15 +1142,10 @@ export default function StudioTab() {
         }
 
         // 选中新创建的分组
-        setSelectedGroupIds([newGroup.id]);
-        setSelectedNodeIds([]);
-    }, [saveHistory]);
+        setSelection({ nodeIds: [], groupIds: [newGroup.id] });
+    }, [saveHistory, setSelection]);
 
-    // 使用 ref 存储最新的 scale 和 pan 值，避免闭包问题
-    const scaleRef = useRef(scale);
-    const panRef = useRef(pan);
-    useEffect(() => { scaleRef.current = scale; }, [scale]);
-    useEffect(() => { panRef.current = pan; }, [pan]);
+    // scaleRef, panRef 已迁移到 useViewport
 
     const handleWheel = useCallback((e: WheelEvent) => {
         e.preventDefault();
@@ -1027,27 +1191,26 @@ export default function StudioTab() {
 
     const handleCanvasMouseDown = (e: React.MouseEvent) => {
         if (contextMenu) setContextMenu(null);
-        setSelectedGroupIds([]);
+        selectGroups([]);
         // 点击画布空白区域时，让当前聚焦的输入框失去焦点
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 
         // Space + Left Click = Canvas Drag (like middle mouse or shift+click)
         if (e.button === 0 && isSpacePressed) {
             e.preventDefault();
-            setIsDraggingCanvas(true);
-            setLastMousePos({ x: e.clientX, y: e.clientY });
+            startPanning({ x: e.clientX, y: e.clientY });
             return;
         }
 
         if (e.button === 0 && !e.shiftKey) {
             if (e.detail > 1) { e.preventDefault(); return; }
             e.preventDefault(); // 防止拖拽选中文本
-            setSelectedNodeIds([]);
+            selectNodes([]);
             // Use canvas-relative coordinates for selection rect
             const canvasPos = getCanvasMousePos(e.clientX, e.clientY);
-            setSelectionRect({ startX: canvasPos.x, startY: canvasPos.y, currentX: canvasPos.x, currentY: canvasPos.y });
+            startSelecting(canvasPos.x, canvasPos.y);
         }
-        if (e.button === 1 || (e.button === 0 && e.shiftKey)) { e.preventDefault(); setIsDraggingCanvas(true); setLastMousePos({ x: e.clientX, y: e.clientY }); }
+        if (e.button === 1 || (e.button === 0 && e.shiftKey)) { e.preventDefault(); startPanning({ x: e.clientX, y: e.clientY }); }
     };
 
     const handleGlobalMouseMove = useCallback((e: MouseEvent) => {
@@ -1066,10 +1229,10 @@ export default function StudioTab() {
             // Always update mousePos for connection preview (using canvas-relative coords)
             setMousePos({ x: canvasX, y: canvasY });
 
-            if (selectionRect) {
-                setSelectionRect((prev: any) => prev ? ({ ...prev, currentX: canvasX, currentY: canvasY }) : null);
+            if (isSelecting) {
+                updateSelecting(canvasX, canvasY);
                 // Don't return - allow mousePos update for connection preview
-                if (!connectionStartRef.current) return;
+                if (!getConnectionStartRef()) return;
             }
 
             if (dragGroupRef.current) {
@@ -1086,11 +1249,13 @@ export default function StudioTab() {
                 return;
             }
 
-            if (isDraggingCanvas) {
-                const dx = clientX - lastMousePos.x;
-                const dy = clientY - lastMousePos.y;
+            // Panning: 使用 mode.lastPos 避免闭包问题
+            const panningLastPos = getPanningLastPos();
+            if (panningLastPos) {
+                const dx = clientX - panningLastPos.x;
+                const dy = clientY - panningLastPos.y;
                 setPan(p => ({ x: p.x + dx, y: p.y + dy }));
-                setLastMousePos({ x: clientX, y: clientY });
+                updatePanning({ x: clientX, y: clientY });
             }
 
             if (draggingNodeId && dragNodeRef.current && dragNodeRef.current.id === draggingNodeId) {
@@ -1256,7 +1421,7 @@ export default function StudioTab() {
                 resizeGroupRef.current.currentHeight = newHeight;
             }
         });
-    }, [selectionRect, isDraggingCanvas, draggingNodeId, resizingNodeId, resizingGroupId, initialSize, resizeStartPos, scale, lastMousePos]);
+    }, [isSelecting, updateSelecting, getConnectionStartRef, getPanningLastPos, updatePanning, draggingNodeId, resizingNodeId, resizingGroupId, initialSize, resizeStartPos, scale, lastMousePos]);
 
     const handleGlobalMouseUp = useCallback((e: MouseEvent) => {
         if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
@@ -1292,10 +1457,12 @@ export default function StudioTab() {
                 });
 
                 // 同时设置选中的分组和节点
-                setSelectedGroupIds(selectedGroups.map(g => g.id));
-                setSelectedNodeIds(enclosedNodes.map(n => n.id));
+                setSelection({
+                    groupIds: selectedGroups.map(g => g.id),
+                    nodeIds: enclosedNodes.map(n => n.id)
+                });
             }
-            setSelectionRect(null);
+            finishInteraction();
         }
 
         // 拖拽结束：一次性提交节点位置到 state ⚡
@@ -1370,7 +1537,7 @@ export default function StudioTab() {
                     setConnections(prev => [...prev, ...newConnections]);
                 }
                 // 选中新复制的节点
-                setSelectedNodeIds(newNodes.map(n => n.id));
+                selectNodes(newNodes.map(n => n.id));
             } else {
                 // 普通拖拽：移动节点（包括选中分组的内部节点）
                 const selectedGroupsToMove = dragNodeRef.current?.selectedGroups || [];
@@ -1430,7 +1597,7 @@ export default function StudioTab() {
 
         // 检查是否从有输出能力的节点的输出端口开始拖拽并释放到空白区域
         // 如果是，弹出节点选择框（继续编辑功能）
-        const connStart = connectionStartRef.current;
+        const connStart = getConnectionStartRef();
         if (connStart && connStart.portType === 'output' && connStart.id !== 'smart-sequence-dock') {
             const sourceNode = nodesRef.current.find(n => n.id === connStart.id);
             if (sourceNode) {
@@ -1468,9 +1635,11 @@ export default function StudioTab() {
 
         // 清除复制光标
         document.body.style.cursor = '';
-        setIsDraggingCanvas(false); setDraggingNodeId(null); setDraggingNodeParentGroupId(null); setDraggingGroup(null); setResizingGroupId(null); setActiveGroupNodeIds([]); setResizingNodeId(null); setInitialSize(null); setResizeStartPos(null); setConnectionStart(null);
+        // 重置所有交互状态
+        setDraggingNodeId(null); setDraggingNodeParentGroupId(null); setDraggingGroup(null); setResizingGroupId(null); setActiveGroupNodeIds([]); setResizingNodeId(null); setInitialSize(null); setResizeStartPos(null);
+        finishInteraction(); // 重置 mode 为 idle (包括 panning, connectionStart, selectionRect)
         dragNodeRef.current = null; resizeContextRef.current = null; dragGroupRef.current = null; resizeGroupRef.current = null;
-    }, [selectionRect, pan, scale, saveHistory, draggingNodeId, resizingNodeId, resizingGroupId]);
+    }, [selectionRect, finishInteraction, getConnectionStartRef, pan, scale, saveHistory, draggingNodeId, resizingNodeId, resizingGroupId]);
 
     useEffect(() => { window.addEventListener('mousemove', handleGlobalMouseMove); window.addEventListener('mouseup', handleGlobalMouseUp); return () => { window.removeEventListener('mousemove', handleGlobalMouseMove); window.removeEventListener('mouseup', handleGlobalMouseUp); }; }, [handleGlobalMouseMove, handleGlobalMouseUp]);
 
@@ -1492,6 +1661,15 @@ export default function StudioTab() {
                     if (data.image) handleAssetGenerated('image', data.image, updated.title);
                     if (data.videoUri) handleAssetGenerated('video', data.videoUri, updated.title);
                     if (data.audioUri) handleAssetGenerated('audio', data.audioUri, updated.title);
+
+                    // 保存用户配置（仅保存配置相关字段，不保存结果数据）
+                    const configFields = REMEMBERED_FIELDS[n.type];
+                    if (configFields) {
+                        const hasConfigUpdate = configFields.some(field => data[field] !== undefined);
+                        if (hasConfigUpdate) {
+                            saveNodeConfig(n.type, mergedData);
+                        }
+                    }
 
                     return updated;
                 }
@@ -1814,7 +1992,8 @@ export default function StudioTab() {
                             count: node.data.videoCount || 1,
                             generationMode: strategy.generationMode,
                             resolution: node.data.resolution,
-                            duration: node.data.duration  // 视频时长
+                            duration: node.data.duration,  // 视频时长
+                            videoConfig: node.data.videoConfig,  // 厂商扩展配置
                         },
                         strategy.inputImageForGeneration,
                         strategy.videoInput,
@@ -1928,7 +2107,8 @@ export default function StudioTab() {
                             count: node.data.videoCount || 1,
                             generationMode: strategy.generationMode,
                             resolution: node.data.resolution,
-                            duration: node.data.duration  // 视频时长
+                            duration: node.data.duration,  // 视频时长
+                            videoConfig: node.data.videoConfig,  // 厂商扩展配置
                         },
                         strategy.inputImageForGeneration,
                         videoInput || strategy.videoInput,
@@ -2218,12 +2398,11 @@ export default function StudioTab() {
         setNodes([]);
         setConnections([]);
         setGroups([]);
-        setSelectedNodeIds([]);
-        setSelectedGroupIds([]);
+        clearSelection();
         // 重置视口
         setPan({ x: 0, y: 0 });
         setScale(1);
-    }, [currentCanvasId, nodes.length, canvases.length, saveCurrentCanvas]);
+    }, [currentCanvasId, nodes.length, canvases.length, saveCurrentCanvas, clearSelection]);
 
     const selectCanvas = useCallback((id: string) => {
         if (id === currentCanvasId) return;
@@ -2240,8 +2419,7 @@ export default function StudioTab() {
             setConnections(JSON.parse(JSON.stringify(canvas.connections)));
             setGroups(JSON.parse(JSON.stringify(canvas.groups)));
             setCurrentCanvasId(id);
-            setSelectedNodeIds([]);
-            setSelectedGroupIds([]);
+            clearSelection();
 
             // 恢复视口状态
             if (canvas.pan && canvas.scale) {
@@ -2316,9 +2494,8 @@ export default function StudioTab() {
             }
             return newCanvases;
         });
-        setSelectedNodeIds([]);
-        setSelectedGroupIds([]);
-    }, [canvases, currentCanvasId]);
+        clearSelection();
+    }, [canvases, currentCanvasId, clearSelection]);
 
     const renameCanvas = useCallback((id: string, newTitle: string) => {
         setCanvases(prev => prev.map(c => c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c));
@@ -2338,7 +2515,8 @@ export default function StudioTab() {
         const handleKeyDown = (e: KeyboardEvent) => {
             const target = e.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); setSelectedNodeIds(nodesRef.current.map(n => n.id)); return; }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); selectNodes(nodesRef.current.map(n => n.id)); return; }
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); redo(); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') { const lastSelected = selectedNodeIds[selectedNodeIds.length - 1]; if (lastSelected) { const nodeToCopy = nodesRef.current.find(n => n.id === lastSelected); if (nodeToCopy) { e.preventDefault(); setClipboard(JSON.parse(JSON.stringify(nodeToCopy))); } } return; }
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
@@ -2362,7 +2540,7 @@ export default function StudioTab() {
                         const newConnections = inheritedInputs.map(inputId => ({ from: inputId, to: newNodeId }));
                         setConnections(prev => [...prev, ...newConnections]);
                     }
-                    setSelectedNodeIds([newNode.id]);
+                    selectNodes([newNode.id]);
                 }
                 return;
             }
@@ -2371,7 +2549,7 @@ export default function StudioTab() {
                     saveHistory();
                     if (selectedGroupIds.length > 0) {
                         setGroups(prev => prev.filter(g => !selectedGroupIds.includes(g.id)));
-                        setSelectedGroupIds([]);
+                        selectGroups([]);
                     }
                     if (selectedNodeIds.length > 0) {
                         deleteNodes(selectedNodeIds);
@@ -2551,21 +2729,24 @@ export default function StudioTab() {
                         <div className="relative">
                             <div className="relative flex flex-col items-center">
 
-                                {/* Logo & Title */}
+                                {/* Logo & Title - 从 /public/brand.json 配置 */}
                                 <div className="flex items-center gap-4 mb-8">
-                                    {/* Logo - 纯图标，去除圆角矩形背景 */}
-                                    <div className="relative w-12 h-12 flex items-center justify-center">
-                                        <Sparkles size={40} strokeWidth={1.5} className="text-slate-800 dark:text-slate-100 drop-shadow-sm" />
+                                    <div className="relative w-16 h-16 flex items-center justify-center">
+                                        <img
+                                            src={theme === 'dark' ? brand.logo.dark : brand.logo.light}
+                                            alt={`${brand.name} Logo`}
+                                            className="w-14 h-14 object-contain"
+                                        />
                                     </div>
                                     <div className="flex flex-col">
                                         <h1 className="text-4xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
-                                            LSAI <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-purple-500 font-extrabold">Studio</span>
+                                            {brand.namePrefix}<span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-purple-500 font-extrabold">{brand.nameHighlight}</span>
                                         </h1>
                                         <div className="flex items-center gap-2 mt-1">
                                             <span className="h-1 w-1 rounded-full bg-amber-400" />
                                             <span className="h-1 w-1 rounded-full bg-blue-400" />
                                             <span className="h-1 w-1 rounded-full bg-emerald-400" />
-                                            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-widest pl-1">Creative Canvas</span>
+                                            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-widest pl-1">{brand.slogan}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -2599,8 +2780,7 @@ export default function StudioTab() {
                                 if (target.closest('[data-resize-handle]')) return;
                                 e.stopPropagation(); e.preventDefault();
                                 // 点击分组：选中分组，清除节点选择
-                                setSelectedGroupIds([g.id]);
-                                setSelectedNodeIds([]);
+                                setSelection({ nodeIds: [], groupIds: [g.id] });
                                 const childNodes = nodes.filter(n => { const b = getNodeBounds(n); const cx = b.x + b.width / 2; const cy = b.y + b.height / 2; return cx > g.x && cx < g.x + g.width && cy > g.y && cy < g.y + g.height; }).map(n => ({ id: n.id, startX: n.x, startY: n.y }));
                                 dragGroupRef.current = { id: g.id, startX: g.x, startY: g.y, mouseStartX: e.clientX, mouseStartY: e.clientY, childNodes };
                                 setActiveGroupNodeIds(childNodes.map(c => c.id)); setDraggingGroup({ id: g.id });
@@ -2641,7 +2821,7 @@ export default function StudioTab() {
                                             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                                             const centerX = rect.left + rect.width / 2;
                                             const centerY = rect.top + rect.height / 2;
-                                            setConnectionStart({
+                                            startConnecting({
                                                 id: `group:${g.id}`,
                                                 portType: 'output',
                                                 screenX: centerX,
@@ -2654,7 +2834,7 @@ export default function StudioTab() {
                                             if (connectionStart && connectionStart.id !== `group:${g.id}`) {
                                                 // 分组只能作为输出端，不能接收连接
                                             }
-                                            setConnectionStart(null);
+                                            finishInteraction();
                                         }}
                                         onDoubleClick={(e) => {
                                             e.stopPropagation();
@@ -2835,11 +3015,11 @@ export default function StudioTab() {
                                     currentSelection = selectedNodeIds.includes(id)
                                         ? selectedNodeIds.filter(i => i !== id)
                                         : [...selectedNodeIds, id];
-                                    setSelectedNodeIds(currentSelection);
+                                    selectNodes(currentSelection);
                                 } else if (!selectedNodeIds.includes(id) && !isCopyDrag) {
                                     // 点击未选中的节点：只选中当前节点（复制拖拽时不改变选择）
                                     currentSelection = [id];
-                                    setSelectedNodeIds(currentSelection);
+                                    selectNodes(currentSelection);
                                 }
                                 // 如果点击已选中的节点，保持当前选择不变（允许拖动多选）
 
@@ -2913,11 +3093,11 @@ export default function StudioTab() {
                                 const rect = portElement.getBoundingClientRect();
                                 const centerX = rect.left + rect.width / 2;
                                 const centerY = rect.top + rect.height / 2;
-                                setConnectionStart({ id, portType: type, screenX: centerX, screenY: centerY });
+                                startConnecting({ id, portType: type, screenX: centerX, screenY: centerY });
                             }}
                             onPortMouseUp={(e, id, type) => {
                                 e.stopPropagation();
-                                const start = connectionStartRef.current;
+                                const start = getConnectionStartRef();
                                 if (start && start.id !== id) {
                                     if (start.id === 'smart-sequence-dock') {
                                         // Smart sequence dock connection - do nothing for now
@@ -3062,9 +3242,8 @@ export default function StudioTab() {
                                         });
                                     }
                                 }
-                                // 立即更新 ref，防止 handleGlobalMouseUp 误触发节点选择框
-                                connectionStartRef.current = null;
-                                setConnectionStart(null);
+                                // 结束连接模式
+                                finishInteraction();
                             }}
                             onNodeContextMenu={(e, id) => {
                                 e.stopPropagation(); e.preventDefault();
@@ -3182,7 +3361,71 @@ export default function StudioTab() {
                         {contextMenuTarget?.type === 'create' && (
                             <>
                                 <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">创建新节点</div>
-                                {[NodeType.PROMPT_INPUT, NodeType.IMAGE_ASSET, NodeType.VIDEO_ASSET, NodeType.IMAGE_GENERATOR, NodeType.VIDEO_GENERATOR, NodeType.MULTI_FRAME_VIDEO, NodeType.AUDIO_GENERATOR].map(t => { const ItemIcon = getNodeIcon(t); return (<button key={t} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors" onClick={() => { addNode(t, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale); setContextMenu(null); }}> <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" /> {getNodeNameCN(t)} </button>); })}
+                                {getMenuStructure().map((item, idx) => {
+                                    if (item.type === 'divider') {
+                                        return <div key={`divider-${idx}`} className="my-1.5 border-t border-slate-200 dark:border-slate-700" />;
+                                    }
+                                    const ItemIcon = getNodeIcon(item.type as NodeType);
+
+                                    // 有子菜单的项目 - 悬停展开（按厂商分组）
+                                    if (item.hasSubmenu && item.providers && item.providers.length > 0) {
+                                        return (
+                                            <div key={item.type} className="relative group/submenu">
+                                                <div className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer">
+                                                    <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" />
+                                                    <span className="flex-1">{item.label}</span>
+                                                    <ChevronRightIcon size={12} className="text-slate-400" />
+                                                </div>
+                                                {/* 二级子菜单 - 显示厂商 */}
+                                                <div className="absolute left-full top-0 ml-1 opacity-0 invisible group-hover/submenu:opacity-100 group-hover/submenu:visible transition-all duration-150 z-[101]">
+                                                    <div className="bg-white/90 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl p-1 min-w-[140px]">
+                                                        {item.providers.map((provider: ProviderDefinition) => (
+                                                            <button
+                                                                key={provider.id}
+                                                                className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-cyan-500/20 hover:text-cyan-600 dark:hover:text-cyan-400 rounded-lg flex items-center gap-2 transition-colors"
+                                                                onClick={() => {
+                                                                    // 根据 provider 类型决定节点类型
+                                                                    let nodeType: NodeType;
+                                                                    if (item.type === 'IMAGE_GENERATOR') {
+                                                                        nodeType = NodeType.IMAGE_GENERATOR;
+                                                                    } else if (item.type === 'VIDEO_GENERATOR') {
+                                                                        nodeType = NodeType.VIDEO_GENERATOR;
+                                                                    } else if (item.type === 'AUDIO_GENERATOR') {
+                                                                        // 音频：根据 subcategory 区分音乐/语音
+                                                                        nodeType = provider.subcategory === 'voice' ? NodeType.VOICE_GENERATOR : NodeType.AUDIO_GENERATOR;
+                                                                    } else {
+                                                                        nodeType = NodeType.AUDIO_GENERATOR;
+                                                                    }
+                                                                    const defaultModelId = getDefaultModelId(provider.id);
+                                                                    addNode(nodeType, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale, undefined, defaultModelId);
+                                                                    setContextMenu(null);
+                                                                }}
+                                                            >
+                                                                {provider.logo && <img src={provider.logo} alt="" className="w-4 h-4 rounded" onError={(e) => { e.currentTarget.style.display = 'none'; }} />}
+                                                                <span>{provider.name}</span>
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+
+                                    // 普通项目 - 直接点击创建
+                                    return (
+                                        <button
+                                            key={item.type}
+                                            className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2.5 transition-colors"
+                                            onClick={() => {
+                                                addNode(item.type as NodeType, (contextMenu.x - pan.x) / scale, (contextMenu.y - pan.y) / scale);
+                                                setContextMenu(null);
+                                            }}
+                                        >
+                                            <ItemIcon size={12} className="text-blue-600 dark:text-blue-400" />
+                                            {item.label}
+                                        </button>
+                                    );
+                                })}
                             </>
                         )}
                         {contextMenuTarget?.type === 'group' && (
@@ -3263,7 +3506,11 @@ export default function StudioTab() {
                                 };
 
                                 // 根据节点类型设置默认模型
+                                // 读取保存的配置
+                                const savedConfig = loadNodeConfig(nodeType);
+
                                 const getDefaultModel = () => {
+                                    if (savedConfig.model) return savedConfig.model;
                                     if (nodeType === NodeType.PROMPT_INPUT) return 'gemini-2.5-flash';
                                     if (nodeType === NodeType.IMAGE_GENERATOR) return 'nano-banana';
                                     if (nodeType === NodeType.VIDEO_GENERATOR) return 'veo3.1';
@@ -3276,6 +3523,8 @@ export default function StudioTab() {
 
                                 // 如果创建智能多帧节点且源节点有图片，将图片作为第一帧
                                 const getMultiFrameData = () => {
+                                    const viduModel = savedConfig.multiFrameData?.viduModel || 'viduq2-turbo';
+                                    const viduResolution = savedConfig.multiFrameData?.viduResolution || '720p';
                                     if (nodeType === NodeType.MULTI_FRAME_VIDEO && hasImage && sourceNode.data.image) {
                                         return {
                                             frames: [{
@@ -3283,12 +3532,12 @@ export default function StudioTab() {
                                                 src: sourceNode.data.image,
                                                 transition: { duration: 4, prompt: '' }
                                             }],
-                                            viduModel: 'viduq2-turbo' as const,
-                                            viduResolution: '720p' as const,
+                                            viduModel,
+                                            viduResolution,
                                         };
                                     }
                                     return nodeType === NodeType.MULTI_FRAME_VIDEO
-                                        ? { frames: [], viduModel: 'viduq2-turbo' as const, viduResolution: '720p' as const }
+                                        ? { frames: [], viduModel, viduResolution }
                                         : undefined;
                                 };
 
@@ -3303,8 +3552,13 @@ export default function StudioTab() {
                                     status: NodeStatus.IDLE,
                                     data: {
                                         model: getDefaultModel(),
-                                        aspectRatio: '16:9',
+                                        aspectRatio: savedConfig.aspectRatio || '16:9',
+                                        resolution: savedConfig.resolution,
+                                        duration: savedConfig.duration,
+                                        imageCount: savedConfig.imageCount,
+                                        videoConfig: savedConfig.videoConfig,
                                         ...(generationMode && { generationMode }),
+                                        ...(!generationMode && savedConfig.generationMode && { generationMode: savedConfig.generationMode }),
                                         ...(promptToInject && { prompt: promptToInject }), // 注入提示词
                                         ...(getMultiFrameData() && { multiFrameData: getMultiFrameData() }),
                                     },
@@ -3483,7 +3737,6 @@ export default function StudioTab() {
 
                 <SidebarDock
                     onAddNode={addNode}
-                    onUndo={undo}
                     isChatOpen={isChatOpen}
                     onToggleChat={() => setIsChatOpen(!isChatOpen)}
                     assetHistory={assetHistory}
@@ -3501,15 +3754,50 @@ export default function StudioTab() {
 
                 <AssistantPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
 
-                <div className="absolute bottom-8 right-8 flex items-center gap-3 px-4 py-2 bg-white/80 dark:bg-slate-800/80 backdrop-blur-2xl border border-slate-300 dark:border-slate-600 rounded-full shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                    <button onClick={() => setScale(s => Math.max(0.2, s - 0.1))} className="p-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-slate-700"><Minus size={14} strokeWidth={3} /></button>
-                    <div className="flex items-center gap-2 min-w-[100px]">
-                        <input type="range" min="0.2" max="3" step="0.1" value={scale} onChange={(e) => setScale(parseFloat(e.target.value))} className="w-24 h-1 bg-white/20 dark:bg-black/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white dark:[&::-webkit-slider-thumb]:bg-slate-300 [&::-webkit-slider-thumb]:shadow-lg hover:[&::-webkit-slider-thumb]:scale-125 transition-all" />
-                        <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 w-8 text-right tabular-nums cursor-pointer hover:text-slate-900 dark:hover:text-slate-100" onClick={() => setScale(1)} title="Reset Zoom">{Math.round(scale * 100)}%</span>
-                    </div>
-                    <button onClick={() => setScale(s => Math.min(3, s + 0.1))} className="p-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-slate-700"><Plus size={14} strokeWidth={3} /></button>
-                    <button onClick={handleFitView} className="p-1.5 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 ml-2 border-l border-slate-300 dark:border-slate-600 pl-3" title="适配视图">
-                        <Scan size={14} strokeWidth={3} />
+                {/* 底部工具栏：撤销/重做 + 缩放控制 */}
+                <div className="absolute bottom-8 right-8 flex items-center gap-1 px-2 py-1.5 bg-white/80 dark:bg-slate-800/80 backdrop-blur-2xl border border-slate-300 dark:border-slate-600 rounded-2xl shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                    {/* 撤销/重做 */}
+                    <button
+                        onClick={undo}
+                        disabled={!canUndo}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 disabled:text-slate-300 dark:disabled:text-slate-600 disabled:cursor-not-allowed transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 disabled:hover:bg-transparent"
+                        title="撤销 (⌘Z)"
+                    >
+                        <Undo2 size={16} strokeWidth={2} />
+                    </button>
+                    <button
+                        onClick={redo}
+                        disabled={!canRedo}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 disabled:text-slate-300 dark:disabled:text-slate-600 disabled:cursor-not-allowed transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 disabled:hover:bg-transparent"
+                        title="重做 (⌘⇧Z)"
+                    >
+                        <Redo2 size={16} strokeWidth={2} />
+                    </button>
+
+                    {/* 分隔线 */}
+                    <div className="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1" />
+
+                    {/* 缩放控制 */}
+                    <button onClick={() => setScale(s => Math.max(0.2, s - 0.1))} className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700">
+                        <Minus size={14} strokeWidth={2.5} />
+                    </button>
+                    <span
+                        className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 w-10 text-center tabular-nums cursor-pointer hover:text-slate-900 dark:hover:text-slate-100 select-none"
+                        onClick={() => setScale(1)}
+                        title="重置缩放"
+                    >
+                        {Math.round(scale * 100)}%
+                    </span>
+                    <button onClick={() => setScale(s => Math.min(3, s + 0.1))} className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700">
+                        <Plus size={14} strokeWidth={2.5} />
+                    </button>
+
+                    {/* 分隔线 */}
+                    <div className="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1" />
+
+                    {/* 适配视图 */}
+                    <button onClick={handleFitView} className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700" title="适配视图">
+                        <Scan size={14} strokeWidth={2.5} />
                     </button>
                 </div>
             </div>

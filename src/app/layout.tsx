@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { brand } from "@/config/brand";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -13,8 +14,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Studio - AI Creative Workflow",
-  description: "AI-powered creative workflow studio",
+  title: brand.title,
+  description: brand.description,
+  icons: {
+    icon: brand.logo.favicon,
+    shortcut: brand.logo.favicon,
+    apple: brand.logo.favicon,
+  },
 };
 
 export default function RootLayout({

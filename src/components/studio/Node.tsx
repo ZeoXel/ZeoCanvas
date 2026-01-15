@@ -1,8 +1,10 @@
 "use client";
 
 import { AppNode, NodeStatus, NodeType, AudioGenerationMode } from '@/types';
-import { Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, Wand2, Scaling, FileSearch, Edit, Loader2, X, Upload, Film, ChevronDown, Copy, Monitor, Music, Pause, Mic2, Grid3X3, Check, Clock, ArrowRight } from 'lucide-react';
+import { Play, Image as ImageIcon, Video as VideoIcon, Type, AlertCircle, CheckCircle, Plus, Maximize2, Download, Wand2, Scaling, FileSearch, Edit, Loader2, X, Upload, Film, ChevronDown, ChevronUp, Copy, Monitor, Music, Pause, Mic2, Grid3X3, Check, Clock, ArrowRight, Settings2, Speech } from 'lucide-react';
 import { AudioNodePanel } from './AudioNodePanel';
+import { ConfigExpandButton, CollapsibleContent } from './shared/ConfigExpandSection';
+import { VideoConfigPanel, ViduConfig, VeoConfig, SeedanceConfig, ViduGenerationMode } from './shared/VideoConfigPanel';
 import React, { memo, useRef, useState, useEffect, useCallback } from 'react';
 
 // Import shared components and utilities
@@ -28,11 +30,40 @@ import {
     getDurationOptions,
     getDefaultDuration,
     supportsFirstLastFrame,
+    getVideoResolutions,
+    getDefaultVideoResolution,
 } from './shared';
+import type { VideoGenerationMode } from './shared/constants';
 import type { InputAsset } from './shared';
+import { getProviderByModelId } from '@/config/models';
 
 // Re-export for backward compatibility
 export { globalVideoBlobCache } from './shared';
+
+/**
+ * 带悬停提示的图标组件
+ * 用于节点空状态的简洁显示
+ */
+const IconWithTooltip: React.FC<{
+    icon: React.ElementType;
+    tooltip: string;
+    colorClass: string;
+    size?: number;
+    onClick?: (e: React.MouseEvent) => void;
+    isLoading?: boolean;
+}> = ({ icon: Icon, tooltip, colorClass, size = 32, onClick, isLoading }) => (
+    <div className="relative group/icon select-none" onClick={onClick} onMouseDown={onClick ? (e) => e.stopPropagation() : undefined}>
+        {isLoading ? (
+            <Loader2 size={size} className={`animate-spin ${colorClass}`} />
+        ) : (
+            <Icon size={size} className={`${colorClass} opacity-50 ${onClick ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`} />
+        )}
+        <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-[9px] font-medium rounded-md whitespace-nowrap opacity-0 group-hover/icon:opacity-100 transition-opacity pointer-events-none z-50">
+            {tooltip}
+            <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-800 dark:bg-slate-700 rotate-45" />
+        </div>
+    </div>
+);
 
 interface NodeProps {
     node: AppNode;
@@ -112,6 +143,7 @@ const NodeComponent: React.FC<NodeProps> = ({
     const [isInputFocused, setIsInputFocused] = useState(false);
     const [isPlayingAudio, setIsPlayingAudio] = useState(false);
     const [isEditingResult, setIsEditingResult] = useState(false); // 编辑已有结果的模式
+    const [isVideoConfigExpanded, setIsVideoConfigExpanded] = useState(false); // 视频扩展配置展开状态
     const generationMode = node.data.generationMode || 'CONTINUE';
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [localPrompt, setLocalPrompt] = useState(node.data.prompt || '');
@@ -129,14 +161,12 @@ const NodeComponent: React.FC<NodeProps> = ({
 
     useEffect(() => { setLocalPrompt(node.data.prompt || ''); }, [node.data.prompt]);
 
-    // 网格展开/收起动画控制：收起时延迟显示底部面板
+    // 网格展开/收起动画控制：收起时延迟显示底部面板（与尺寸/opacity过渡同步）
     useEffect(() => {
         if (showImageGrid) {
-            // 展开时立即隐藏底部面板
             setIsGridAnimating(true);
         } else {
-            // 收起时等待动画完成（500ms）后再显示底部面板
-            const timer = setTimeout(() => setIsGridAnimating(false), 500);
+            const timer = setTimeout(() => setIsGridAnimating(false), 400);
             return () => clearTimeout(timer);
         }
     }, [showImageGrid]);
@@ -378,7 +408,8 @@ const NodeComponent: React.FC<NodeProps> = ({
             case NodeType.IMAGE_GENERATOR: return { icon: ImageIcon, color: 'text-blue-400', border: 'border-blue-500/30' };
             case NodeType.VIDEO_GENERATOR: return { icon: VideoIcon, color: 'text-green-400', border: 'border-green-500/30' };
             case NodeType.VIDEO_FACTORY: return { icon: Film, color: 'text-green-400', border: 'border-green-500/30' };
-            case NodeType.AUDIO_GENERATOR: return { icon: Mic2, color: 'text-red-400', border: 'border-red-500/30' };
+            case NodeType.AUDIO_GENERATOR: return { icon: Music, color: 'text-red-400', border: 'border-red-500/30' };
+            case NodeType.VOICE_GENERATOR: return { icon: Speech, color: 'text-red-400', border: 'border-red-500/30' };
             case NodeType.IMAGE_EDITOR: return { icon: Edit, color: 'text-blue-400', border: 'border-blue-500/30' };
             case NodeType.MULTI_FRAME_VIDEO: return { icon: Film, color: 'text-emerald-400', border: 'border-emerald-500/30' };
             default: return { icon: Type, color: 'text-slate-600', border: 'border-slate-300' };
@@ -389,7 +420,7 @@ const NodeComponent: React.FC<NodeProps> = ({
     const getNodeHeight = () => {
         if (node.height) return node.height;
         if (node.type === NodeType.IMAGE_EDITOR) return DEFAULT_FIXED_HEIGHT;
-        if (node.type === NodeType.AUDIO_GENERATOR) return AUDIO_NODE_HEIGHT;
+        if (node.type === NodeType.AUDIO_GENERATOR || node.type === NodeType.VOICE_GENERATOR) return AUDIO_NODE_HEIGHT;
         // 多帧视频节点：使用 16:9 比例（配置面板在底部悬浮）
         if (node.type === NodeType.MULTI_FRAME_VIDEO) {
             return Math.round((node.width || DEFAULT_NODE_WIDTH) * 9 / 16);
@@ -417,7 +448,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                         <div className="flex items-center gap-1">
                             <button onClick={handleDownload} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="下载"><Download size={14} /></button>
                             {node.data.image && onEdit && <button onClick={handleEdit} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="编辑涂鸦"><Edit size={14} /></button>}
-                            {node.type !== NodeType.AUDIO_GENERATOR && <button onClick={handleExpand} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="全屏预览"><Maximize2 size={14} /></button>}
+                            {node.type !== NodeType.AUDIO_GENERATOR && node.type !== NodeType.VOICE_GENERATOR && <button onClick={handleExpand} className="p-1.5 bg-white/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-600 backdrop-blur-md rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:border-white/30 dark:hover:border-slate-500/30 transition-colors" title="全屏预览"><Maximize2 size={14} /></button>}
                         </div>
                     )}
                 </div>
@@ -537,15 +568,13 @@ const NodeComponent: React.FC<NodeProps> = ({
                         </div>
                     ) : (
                         // 空状态
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-emerald-50/30 dark:bg-emerald-900/10">
-                            {isWorking ? (
-                                <Loader2 className="animate-spin text-emerald-500" size={28} />
-                            ) : (
-                                <Film size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
-                            )}
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 dark:text-emerald-400">
-                                {isWorking ? '生成中...' : '添加关键帧'}
-                            </span>
+                        <div className="absolute inset-0 flex items-center justify-center bg-emerald-50/30 dark:bg-emerald-900/10">
+                            <IconWithTooltip
+                                icon={Film}
+                                tooltip={isWorking ? '生成中...' : '添加关键帧'}
+                                colorClass="text-emerald-500"
+                                isLoading={isWorking}
+                            />
                         </div>
                     )}
                     {/* 错误显示 */}
@@ -605,16 +634,13 @@ const NodeComponent: React.FC<NodeProps> = ({
             return (
                 <div className="w-full h-full relative group/asset overflow-hidden bg-white dark:bg-slate-800" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
                     {!hasImage ? (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-blue-50/30 dark:bg-blue-900/10 group-hover/asset:bg-blue-50/50 dark:group-hover/asset:bg-blue-900/20 transition-colors">
-                            <div
-                                className="flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-300 select-none"
+                        <div className="absolute inset-0 flex items-center justify-center bg-blue-50/30 dark:bg-blue-900/10 group-hover/asset:bg-blue-50/50 dark:group-hover/asset:bg-blue-900/20 transition-colors">
+                            <IconWithTooltip
+                                icon={Upload}
+                                tooltip="上传图片"
+                                colorClass="text-blue-500"
                                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                                onMouseDown={(e) => e.stopPropagation()}
-                            >
-                                <Upload size={28} className="text-blue-400/60 dark:text-blue-500/50" />
-                                <span className="text-[10px] font-bold uppercase tracking-widest text-blue-500 dark:text-blue-400">上传图片</span>
-                                <span className="text-[8px] text-blue-400/60 dark:text-blue-500/40 mt-1">支持批量上传</span>
-                            </div>
+                            />
                             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleImageUpload} />
                         </div>
                     ) : (
@@ -667,16 +693,13 @@ const NodeComponent: React.FC<NodeProps> = ({
             return (
                 <div className="w-full h-full relative group/asset overflow-hidden bg-white dark:bg-slate-800" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
                     {!hasVideo ? (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-50/30 dark:bg-emerald-900/10 group-hover/asset:bg-emerald-50/50 dark:group-hover/asset:bg-emerald-900/20 transition-colors">
-                            <div
-                                className="flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-300 select-none"
+                        <div className="absolute inset-0 flex items-center justify-center bg-emerald-50/30 dark:bg-emerald-900/10 group-hover/asset:bg-emerald-50/50 dark:group-hover/asset:bg-emerald-900/20 transition-colors">
+                            <IconWithTooltip
+                                icon={Upload}
+                                tooltip="上传视频"
+                                colorClass="text-emerald-500"
                                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                                onMouseDown={(e) => e.stopPropagation()}
-                            >
-                                <Upload size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
-                                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 dark:text-emerald-400">上传视频</span>
-                                <span className="text-[8px] text-emerald-400/60 dark:text-emerald-500/40 mt-1">支持批量上传</span>
-                            </div>
+                            />
                             <input type="file" ref={fileInputRef} className="hidden" accept="video/*" multiple onChange={handleVideoUpload} />
                         </div>
                     ) : (
@@ -703,13 +726,14 @@ const NodeComponent: React.FC<NodeProps> = ({
             );
         }
 
-        if (node.type === NodeType.AUDIO_GENERATOR) {
-            const audioMode = node.data.audioMode || 'music';
-            const isMusic = audioMode === 'music';
+        if (node.type === NodeType.AUDIO_GENERATOR || node.type === NodeType.VOICE_GENERATOR) {
+            const isMusic = node.type === NodeType.AUDIO_GENERATOR;
             const coverImage = node.data.musicConfig?.coverImage;
+            const bgColor = 'bg-red-50/30 dark:bg-red-900/10 group-hover/media:bg-red-50/60 dark:group-hover/media:bg-red-900/20';
+            const themeColorClass = 'text-red-500';
 
             return (
-                <div className="w-full h-full p-4 flex flex-col justify-center items-center relative overflow-hidden group/audio bg-red-50/30 dark:bg-red-900/10 group-hover/media:bg-red-50/60 dark:group-hover/media:bg-red-900/20 transition-colors">
+                <div className={`w-full h-full p-4 flex flex-col justify-center items-center relative overflow-hidden group/audio ${bgColor} transition-colors`}>
 
                     {/* 封面图（音乐模式且有封面时显示） */}
                     {isMusic && coverImage && (
@@ -717,12 +741,6 @@ const NodeComponent: React.FC<NodeProps> = ({
                             <img src={coverImage} className="w-full h-full object-cover opacity-30 blur-sm" alt="" />
                         </div>
                     )}
-
-                    {/* 模式指示器 - 统一粉红色调 */}
-                    <div className="absolute top-3 left-3 z-10 flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-pink-500/20 text-pink-600 dark:text-pink-400">
-                        {isMusic ? <Music size={10} /> : <Mic2 size={10} />}
-                        <span>{isMusic ? '音乐' : '语音'}</span>
-                    </div>
 
                     {node.data.audioUri ? (
                         <div className="flex flex-col items-center gap-3 w-full z-10">
@@ -742,22 +760,20 @@ const NodeComponent: React.FC<NodeProps> = ({
                             <div className="flex items-center gap-3">
                                 <button
                                     onClick={toggleAudio}
-                                    className="w-10 h-10 rounded-full flex items-center justify-center transition-all hover:scale-110 bg-pink-500/20 hover:bg-pink-500/40 border border-pink-500/50"
+                                    className="w-10 h-10 rounded-full flex items-center justify-center transition-all hover:scale-110 bg-red-500/20 hover:bg-red-500/40 border border-red-500/50"
                                 >
                                     {isPlayingAudio ? <Pause size={18} className="text-slate-900 dark:text-white" /> : <Play size={18} className="text-slate-900 dark:text-white ml-0.5" />}
                                 </button>
                             </div>
                         </div>
                     ) : (
-                        <div className="flex flex-col items-center gap-2 z-10 select-none">
-                            {isWorking ? (
-                                <Loader2 size={28} className="animate-spin text-red-500" />
-                            ) : (
-                                <>
-                                    {isMusic ? <Music size={28} className="text-red-400/60" /> : <Mic2 size={28} className="text-red-400/60" />}
-                                    <span className="text-[10px] font-bold uppercase tracking-widest text-red-500">准备生成</span>
-                                </>
-                            )}
+                        <div className="flex items-center justify-center z-10">
+                            <IconWithTooltip
+                                icon={isMusic ? Music : Speech}
+                                tooltip={isWorking ? '生成中...' : (isMusic ? 'Suno 音乐' : 'MiniMax 语音')}
+                                colorClass={themeColorClass}
+                                isLoading={isWorking}
+                            />
                         </div>
                     )}
 
@@ -942,21 +958,13 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 );
                             })()
                         ) : (
-                            // 普通生成节点空状态：仅图标+提示文本（统一样式与音频节点一致）
-                            <div className="flex flex-col items-center gap-2 select-none">
-                                {isWorking ? (
-                                    <Loader2 className={`animate-spin ${isVideoNode ? 'text-emerald-500' : 'text-blue-500'}`} size={28} />
-                                ) : (
-                                    isVideoNode ? (
-                                        <VideoIcon size={28} className="text-emerald-400/60 dark:text-emerald-500/50" />
-                                    ) : (
-                                        <ImageIcon size={28} className="text-blue-400/60 dark:text-blue-500/50" />
-                                    )
-                                )}
-                                <span className={`text-[10px] font-bold uppercase tracking-widest ${isVideoNode ? 'text-emerald-500 dark:text-emerald-400' : 'text-blue-500 dark:text-blue-400'}`}>
-                                    {isWorking ? "生成中..." : "准备生成"}
-                                </span>
-                            </div>
+                            // 普通生成节点空状态
+                            <IconWithTooltip
+                                icon={isVideoNode ? VideoIcon : ImageIcon}
+                                tooltip={isWorking ? '生成中...' : (isVideoNode ? '视频生成' : '图片生成')}
+                                colorClass={isVideoNode ? 'text-emerald-500' : 'text-blue-500'}
+                                isLoading={isWorking}
+                            />
                         )}
                     </div>
                 ) : (
@@ -1114,7 +1122,7 @@ const NodeComponent: React.FC<NodeProps> = ({
         }
 
         // 音频节点使用专用面板
-        if (node.type === NodeType.AUDIO_GENERATOR) {
+        if (node.type === NodeType.AUDIO_GENERATOR || node.type === NodeType.VOICE_GENERATOR) {
             return (
                 <AudioNodePanel
                     node={node}
@@ -1457,12 +1465,11 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 <button
                                     onClick={handleActionClick}
                                     disabled={frames.length < 2 || isWorking}
-                                    className={`flex items-center gap-1.5 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${frames.length >= 2 && !isWorking
+                                    className={`flex items-center justify-center gap-1.5 min-w-[60px] px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${frames.length >= 2 && !isWorking
                                         ? 'bg-gradient-to-r from-emerald-500 to-green-500 text-white hover:shadow-lg hover:shadow-emerald-500/20 hover:scale-105 active:scale-95'
                                         : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'}`}
                                 >
-                                    <Wand2 size={12} />
-                                    <span>{isWorking ? '生成中...' : '生成'}</span>
+                                    {isWorking ? <Loader2 className="animate-spin" size={12} /> : <><Wand2 size={12} /><span>生成</span></>}
                                 </button>
                             </div>
                         </div>
@@ -1509,29 +1516,15 @@ const NodeComponent: React.FC<NodeProps> = ({
             );
         }
 
-        let models: { l: string, v: string, group?: string }[] = [];
-        if (node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) {
-            // 视频生成模型
-            models = [
-                // Veo 3.1 系列
-                { l: 'Veo 3.1', v: 'veo3.1' },
-                { l: 'Veo 3.1 Pro', v: 'veo3.1-pro' },
-                { l: 'Veo 3.1 多图参考', v: 'veo3.1-components' },
-                // Seedance (火山引擎)
-                { l: 'Seedance 1.5 Pro', v: 'doubao-seedance-1-5-pro-251215' },
-            ];
-        } else {
-            // 图像生成模型
-            models = [
-                { l: 'Seedream 4.5', v: 'doubao-seedream-4-5-251128' },
-                { l: 'Nano Banana', v: 'nano-banana' },
-                { l: 'Nano Banana Pro', v: 'nano-banana-pro' },
-            ];
-        }
+        // 根据当前模型获取所属厂商，只显示该厂商的模型变体
+        const currentProvider = getProviderByModelId(node.data.model || '');
+        const models = currentProvider
+            ? currentProvider.models.map(m => ({ l: m.name, v: m.id }))
+            : [];
+        const providerLogo = currentProvider?.logo;
 
-        // 获取默认模型名称（当 node.data.model 未设置时）
-        const defaultModel = models[0];
-        const currentModelLabel = models.find(m => m.v === node.data.model)?.l || defaultModel?.l || 'AI Model';
+        // 获取当前模型显示名称
+        const currentModelLabel = models.find(m => m.v === node.data.model)?.l || currentProvider?.name || 'AI Model';
 
         // 剧情延展模式：底部缩略图显示已选取的关键帧而非上游视频
         const isCutOrContinueMode = node.type === NodeType.VIDEO_FACTORY && (generationMode === 'CUT' || generationMode === 'CONTINUE');
@@ -1556,11 +1549,52 @@ const NodeComponent: React.FC<NodeProps> = ({
                         <textarea className="w-full bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-500/60 dark:placeholder-slate-400/60 p-3 focus:outline-none resize-none custom-scrollbar font-medium leading-relaxed" style={{ height: `${Math.min(inputHeight, 200)}px` }} placeholder="描述您的修改或生成需求..." value={localPrompt} onChange={(e) => setLocalPrompt(e.target.value)} onBlur={() => { setIsInputFocused(false); commitPrompt(); }} onKeyDown={handleCmdEnter} onFocus={() => setIsInputFocused(true)} onMouseDown={e => e.stopPropagation()} readOnly={isWorking} />
                         <div className="absolute bottom-0 left-0 w-full h-3 cursor-row-resize flex items-center justify-center opacity-0 group-hover/input:opacity-100 transition-opacity" onMouseDown={handleInputResizeStart}><div className="w-8 h-1 rounded-full bg-slate-100 dark:bg-slate-700 group-hover/input:bg-slate-200 dark:group-hover/input:bg-slate-600" /></div>
                     </div>
+                    {/* 视频扩展配置面板 - 仅视频节点且有支持的厂商时显示 */}
+                    {(node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY) && currentProvider?.id && ['vidu', 'seedance', 'veo'].includes(currentProvider.id) && (
+                        <div className="px-3 pb-1">
+                            <div className="flex items-center justify-between mb-1">
+                                <span className="text-[9px] font-medium text-slate-400 dark:text-slate-500">扩展配置</span>
+                                <ConfigExpandButton
+                                    isCollapsed={!isVideoConfigExpanded}
+                                    onClick={() => setIsVideoConfigExpanded(!isVideoConfigExpanded)}
+                                />
+                            </div>
+                            <CollapsibleContent isCollapsed={!isVideoConfigExpanded} maxHeight="200px">
+                                <VideoConfigPanel
+                                    providerId={currentProvider.id}
+                                    config={node.data.videoConfig || {}}
+                                    onConfigChange={(config) => onUpdate(node.id, { videoConfig: config })}
+                                    viduMode={
+                                        // 首尾帧模式：有 firstLastFrameData
+                                        node.data.firstLastFrameData?.firstFrame && node.data.firstLastFrameData?.lastFrame
+                                            ? 'start-end'
+                                            // 图生视频：有输入素材或图片
+                                            : (inputAssets?.length || node.data.image)
+                                                ? 'img2video'
+                                                // 文生视频
+                                                : 'text2video'
+                                    }
+                                />
+                            </CollapsibleContent>
+                        </div>
+                    )}
                     <div className="flex items-center justify-between px-2 pb-1 pt-1 relative z-20">
                         <div className="flex items-center gap-2">
                             <div className="relative group/model">
-                                <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 dark:text-slate-300 hover:text-blue-400 dark:hover:text-blue-300"><span>{currentModelLabel}</span><ChevronDown size={10} /></div>
-                                <div className="absolute bottom-full left-0 pb-2 w-40 opacity-0 translate-y-2 pointer-events-none group-hover/model:opacity-100 group-hover/model:translate-y-0 group-hover/model:pointer-events-auto transition-all duration-200 z-[200]"><div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">{models.map(m => (<div key={m.v} onClick={() => onUpdate(node.id, { model: m.v })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 ${node.data.model === m.v ? 'text-blue-400 dark:text-blue-300 bg-slate-50 dark:bg-slate-700' : 'text-slate-600 dark:text-slate-300'}`}>{m.l}</div>))}</div></div>
+                                <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 dark:text-slate-300 hover:text-blue-400 dark:hover:text-blue-300">
+                                    {providerLogo && <img src={providerLogo} alt="" className="w-3.5 h-3.5 rounded" onError={(e) => { e.currentTarget.style.display = 'none'; }} />}
+                                    <span>{currentModelLabel}</span>
+                                    <ChevronDown size={10} />
+                                </div>
+                                <div className="absolute bottom-full left-0 pb-2 w-44 opacity-0 translate-y-2 pointer-events-none group-hover/model:opacity-100 group-hover/model:translate-y-0 group-hover/model:pointer-events-auto transition-all duration-200 z-[200]">
+                                    <div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                                        {models.map(m => (
+                                            <div key={m.v} onClick={() => onUpdate(node.id, { model: m.v })} className={`px-3 py-2 text-[10px] font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2 ${node.data.model === m.v ? 'text-blue-400 dark:text-blue-300 bg-slate-50 dark:bg-slate-700' : 'text-slate-600 dark:text-slate-300'}`}>
+                                                <span>{m.l}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
                             </div>
                             {/* 比例选择 - 有素材时只读，无素材时可选择 */}
                             {(() => {
@@ -1599,18 +1633,43 @@ const NodeComponent: React.FC<NodeProps> = ({
                                     </div>
                                 );
                             })()}
-                            {/* 分辨率选择 - 根据模型配置显示 */}
+                            {/* 分辨率选择 - 根据模型配置和生成模式显示 */}
                             {(() => {
                                 const isImageNode = node.type.includes('IMAGE');
+                                const isVideoNode = node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY;
                                 const modelConfig = isImageNode ? getImageModelConfig(node.data.model || '') : null;
-                                const showResolution = isImageNode ? modelConfig?.supportsResolution : (node.type === NodeType.VIDEO_GENERATOR || node.type === NodeType.VIDEO_FACTORY);
-                                const resolutions = isImageNode && modelConfig?.resolutions ? modelConfig.resolutions : (node.type.includes('IMAGE') ? IMAGE_RESOLUTIONS : VIDEO_RESOLUTIONS);
-                                const defaultRes = modelConfig?.defaultResolution || (node.type.includes('IMAGE') ? '1k' : '720p');
+                                const showResolution = isImageNode ? modelConfig?.supportsResolution : isVideoNode;
+
+                                // 视频节点：根据当前状态确定生成模式，获取对应的可用分辨率
+                                let resolutions: string[];
+                                let defaultRes: string;
+
+                                if (isVideoNode) {
+                                    // 判断视频生成模式
+                                    const hasFirstLastFrame = node.data.firstLastFrameData?.firstFrame && node.data.firstLastFrameData?.lastFrame;
+                                    const hasInputImage = inputAssets?.length || node.data.image;
+                                    const videoMode: VideoGenerationMode = hasFirstLastFrame ? 'start-end' : (hasInputImage ? 'img2video' : 'text2video');
+                                    resolutions = getVideoResolutions(node.data.model, videoMode);
+                                    defaultRes = getDefaultVideoResolution(node.data.model);
+                                } else if (isImageNode && modelConfig?.resolutions) {
+                                    resolutions = modelConfig.resolutions;
+                                    defaultRes = modelConfig.defaultResolution || '1k';
+                                } else {
+                                    resolutions = node.type.includes('IMAGE') ? IMAGE_RESOLUTIONS : VIDEO_RESOLUTIONS;
+                                    defaultRes = node.type.includes('IMAGE') ? '1k' : '720p';
+                                }
+
+                                // 如果当前分辨率不在可用列表中，自动重置为默认值
+                                const currentRes = node.data.resolution || defaultRes;
+                                if (isVideoNode && !resolutions.includes(currentRes)) {
+                                    // 延迟更新，避免渲染中修改状态
+                                    setTimeout(() => onUpdate(node.id, { resolution: defaultRes }), 0);
+                                }
 
                                 return showResolution && (
                                     <div className="relative group/resolution">
                                         <div className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors text-[10px] font-bold text-slate-600 dark:text-slate-300 hover:text-blue-400 dark:hover:text-blue-300">
-                                            <Monitor size={12} /><span>{node.data.resolution || defaultRes}</span>
+                                            <Monitor size={12} /><span>{resolutions.includes(currentRes) ? currentRes : defaultRes}</span>
                                         </div>
                                         <div className="absolute bottom-full left-0 pb-2 w-20 opacity-0 translate-y-2 pointer-events-none group-hover/resolution:opacity-100 group-hover/resolution:translate-y-0 group-hover/resolution:pointer-events-auto transition-all duration-200 z-[200]">
                                             <div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
@@ -1670,7 +1729,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                                     <span>取消</span>
                                 </button>
                             )}
-                            <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center gap-2 px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 dark:bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />}<span>{isWorking ? '生成中...' : '生成'}</span></button>
+                            <button onClick={handleActionClick} disabled={isWorking} className={`relative flex items-center justify-center gap-2 min-w-[60px] px-4 py-1.5 rounded-[12px] font-bold text-[10px] tracking-wide transition-all duration-300 ${isWorking ? 'bg-slate-50 dark:bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-lg hover:shadow-cyan-500/20 hover:scale-105 active:scale-95'}`}>{isWorking ? <Loader2 className="animate-spin" size={12} /> : <><Wand2 size={12} /><span>生成</span></>}</button>
                         </div>
                     </div>
                 </div>
@@ -1695,7 +1754,7 @@ const NodeComponent: React.FC<NodeProps> = ({
             return 'ring-green-400/80';
         }
         // 音频节点 - 红色
-        if (node.type === NodeType.AUDIO_GENERATOR) {
+        if (node.type === NodeType.AUDIO_GENERATOR || node.type === NodeType.VOICE_GENERATOR) {
             return 'ring-red-400/80';
         }
         // 多帧视频节点 - 绿色（与视频节点统一）
@@ -1733,7 +1792,7 @@ const NodeComponent: React.FC<NodeProps> = ({
                     background: isDarkMode
                         ? (isSelected ? 'rgba(30, 41, 59, 0.96)' : 'rgba(15, 23, 42, 0.9)')
                         : (isSelected ? 'rgba(255, 255, 255, 0.96)' : 'rgba(250, 250, 255, 0.9)'),
-                    transition: isInteracting ? 'none' : 'transform 0.5s cubic-bezier(0.32, 0.72, 0, 1), width 0.5s cubic-bezier(0.32, 0.72, 0, 1), height 0.5s cubic-bezier(0.32, 0.72, 0, 1), box-shadow 0.3s',
+                    transition: isInteracting ? 'none' : 'transform 0.4s cubic-bezier(0.32, 0.72, 0, 1), width 0.4s cubic-bezier(0.32, 0.72, 0, 1), height 0.4s cubic-bezier(0.32, 0.72, 0, 1), box-shadow 0.3s',
                     backdropFilter: isInteracting ? 'none' : 'blur(18px)',
                     boxShadow: isInteracting ? 'none' : `0 0 0 ${(isSelected || isHovered ? 3 : 2) * inverseScale}px var(--tw-ring-color)${isSelected ? ', 0 20px 60px rgba(59,130,246,0.15)' : ''}`,
                     willChange: isInteracting ? 'transform' : 'auto'
@@ -1844,9 +1903,29 @@ const NodeComponent: React.FC<NodeProps> = ({
                     );
                 })()}
                 <div className="w-full h-full flex flex-col relative rounded-[24px] overflow-hidden bg-white dark:bg-slate-800">
-                    {/* 展开时显示网格，收起时显示单图 */}
-                    {hasGrid && showImageGrid ? (
-                        <div className="w-full h-full p-1 relative">
+                    {/* 单图视图 - 始终渲染，通过opacity控制显示 */}
+                    <div
+                        className="absolute inset-0"
+                        style={{
+                            opacity: (hasGrid && showImageGrid) ? 0 : 1,
+                            pointerEvents: (hasGrid && showImageGrid) ? 'none' : 'auto',
+                            zIndex: (hasGrid && showImageGrid) ? 0 : 1,
+                            transition: 'opacity 0.35s ease-out',
+                        }}
+                    >
+                        <div className="w-full h-full relative bg-white dark:bg-slate-800">{renderMediaContent()}</div>
+                    </div>
+                    {/* 网格视图 - 有多图时始终渲染，通过opacity控制显示 */}
+                    {hasGrid && (
+                        <div
+                            className="absolute inset-0 p-1"
+                            style={{
+                                opacity: showImageGrid ? 1 : 0,
+                                pointerEvents: showImageGrid ? 'auto' : 'none',
+                                zIndex: showImageGrid ? 1 : 0,
+                                transition: 'opacity 0.35s ease-out',
+                            }}
+                        >
                             <button
                                 className="absolute top-3 right-3 z-10 w-7 h-7 flex items-center justify-center bg-black/50 hover:bg-black/70 rounded-full transition-colors"
                                 onClick={() => setShowImageGrid(false)}
@@ -1957,8 +2036,6 @@ const NodeComponent: React.FC<NodeProps> = ({
                                 })}
                             </div>
                         </div>
-                    ) : (
-                        <div className="flex-1 min-h-0 relative bg-white dark:bg-slate-800">{renderMediaContent()}</div>
                     )}
                 </div>
                 {!isGridAnimating && renderBottomPanel()}
