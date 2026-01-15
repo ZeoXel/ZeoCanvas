@@ -18,6 +18,21 @@ const PRESET_COLORS = ['#000000', '#ffffff', '#ff3b30', '#007aff', '#4cd964'];
 
 const SPRING = 'cubic-bezier(0.32, 0.72, 0, 1)';
 
+/**
+ * 将外部图片 URL 转换为代理 URL（解决 CORS 问题）
+ */
+const getProxiedUrl = (url: string): string => {
+    // 如果是 base64 或本地 URL，直接返回
+    if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('/')) {
+        return url;
+    }
+    // 如果是需要代理的外部 URL
+    if (url.includes('volces.com') || url.includes('tos-cn-')) {
+        return `/api/proxy/image?url=${encodeURIComponent(url)}`;
+    }
+    return url;
+};
+
 export const ImageEditOverlay: React.FC<ImageEditOverlayProps> = ({
     imageSrc,
     originalImage,
@@ -67,7 +82,11 @@ export const ImageEditOverlay: React.FC<ImageEditOverlayProps> = ({
                 height: img.height * scale
             });
         };
-        img.src = actualOriginalImage;
+        img.onerror = () => {
+            console.error('[ImageEditOverlay] Failed to load image:', actualOriginalImage);
+        };
+        // 使用代理 URL 解决 CORS 问题
+        img.src = getProxiedUrl(actualOriginalImage);
     }, [actualOriginalImage]);
 
     // Initialize canvas when size is set
