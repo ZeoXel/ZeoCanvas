@@ -1,4 +1,5 @@
 import { AuthenticationClient } from 'authing-js-sdk';
+import { syncUserToUserApi, clearApiKey } from './userApiService';
 
 // Authing 配置
 const appId = process.env.NEXT_PUBLIC_AUTHING_APP_ID || '';
@@ -103,6 +104,24 @@ export const loginByEmail = async (email: string, password: string): Promise<Aut
     };
 
     saveUser(authUser);
+
+    // 同步用户到 USERAPI 网关
+    try {
+        await syncUserToUserApi({
+            provider: 'authing',
+            provider_id: authUser.id,
+            provider_token: authUser.token,
+            name: authUser.nickname || authUser.name || authUser.username,
+            email: authUser.email,
+            phone: authUser.phone,
+            avatar: authUser.photo,
+        });
+        console.log('[Auth] 用户已同步到 USERAPI');
+    } catch (error) {
+        console.error('[Auth] USERAPI 同步失败:', error);
+        // 不阻塞登录流程，继续返回用户信息
+    }
+
     return authUser;
 };
 
@@ -135,6 +154,24 @@ export const loginByPhoneCode = async (phone: string, code: string): Promise<Aut
     };
 
     saveUser(authUser);
+
+    // 同步用户到 USERAPI 网关
+    try {
+        await syncUserToUserApi({
+            provider: 'authing',
+            provider_id: authUser.id,
+            provider_token: authUser.token,
+            name: authUser.nickname || authUser.name || authUser.username,
+            email: authUser.email,
+            phone: authUser.phone,
+            avatar: authUser.photo,
+        });
+        console.log('[Auth] 用户已同步到 USERAPI');
+    } catch (error) {
+        console.error('[Auth] USERAPI 同步失败:', error);
+        // 不阻塞登录流程，继续返回用户信息
+    }
+
     return authUser;
 };
 
@@ -183,6 +220,7 @@ export const logout = async (): Promise<void> => {
         // 忽略登出错误
     } finally {
         clearToken();
+        clearApiKey(); // 同时清除 USERAPI Key
     }
 };
 

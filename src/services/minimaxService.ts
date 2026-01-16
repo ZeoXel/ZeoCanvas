@@ -2,6 +2,7 @@
  * MiniMax API 服务 - TTS 语音合成
  *
  * 接口文档: ./docs/接入文档/minimax.md
+ * 通过 USERAPI 网关调用
  *
  * 特性:
  * - 同步和异步两种模式
@@ -9,6 +10,8 @@
  * - 声音效果器：音高、强度、音色调节、音效
  * - 多种输出格式：mp3, wav, pcm, flac
  */
+
+import { gatewayPost, gatewayGet, GatewayError } from './gateway';
 
 export interface MinimaxVoiceSetting {
     voice_id: string;           // 音色编号
@@ -83,12 +86,11 @@ export interface MinimaxTaskStatus {
 
 /**
  * 同步语音合成（适合短文本，<5000字）
+ * 通过 USERAPI 网关调用
  */
 export const synthesizeSpeechSync = async (params: MinimaxGenerateParams): Promise<string> => {
-    const response = await fetch('/api/audio/minimax', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    try {
+        const result = await gatewayPost<MinimaxSyncResponse>('openai', 'minimax/v1/t2a_v2', {
             model: params.model || 'speech-2.6-hd',
             text: params.text,
             stream: false,
@@ -101,43 +103,40 @@ export const synthesizeSpeechSync = async (params: MinimaxGenerateParams): Promi
                 channel: 1,
             },
             output_format: 'url',  // 直接返回 URL
-        }),
-    });
+        });
 
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`MiniMax API 错误: ${error}`);
+        if (result.base_resp.status_code !== 0) {
+            throw new Error(result.base_resp.status_msg || '语音合成失败');
+        }
+
+        if (!result.data?.audio) {
+            throw new Error('未返回音频数据');
+        }
+
+        // 如果是 hex 格式，转换为 base64 data URL
+        if (!result.data.audio.startsWith('http')) {
+            const audioBytes = hexToBytes(result.data.audio);
+            const base64 = bytesToBase64(audioBytes);
+            const format = params.audio_setting?.format || 'mp3';
+            return `data:audio/${format};base64,${base64}`;
+        }
+
+        return result.data.audio;
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw new Error(`MiniMax API 错误: ${error.message}`);
+        }
+        throw error;
     }
-
-    const result: MinimaxSyncResponse = await response.json();
-
-    if (result.base_resp.status_code !== 0) {
-        throw new Error(result.base_resp.status_msg || '语音合成失败');
-    }
-
-    if (!result.data?.audio) {
-        throw new Error('未返回音频数据');
-    }
-
-    // 如果是 hex 格式，转换为 base64 data URL
-    if (!result.data.audio.startsWith('http')) {
-        const audioBytes = hexToBytes(result.data.audio);
-        const base64 = bytesToBase64(audioBytes);
-        const format = params.audio_setting?.format || 'mp3';
-        return `data:audio/${format};base64,${base64}`;
-    }
-
-    return result.data.audio;
 };
 
 /**
  * 异步语音合成（适合长文本，最长5万字）
+ * 通过 USERAPI 网关调用
  */
 export const synthesizeSpeechAsync = async (params: MinimaxGenerateParams): Promise<{ taskId: number; fileId: number }> => {
-    const response = await fetch('/api/audio/minimax?mode=async', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    try {
+        const result = await gatewayPost<MinimaxAsyncResponse>('openai', 'minimax/v1/t2a_async_v2', {
             model: params.model || 'speech-2.6-hd',
             text: params.text,
             voice_setting: params.voice_setting,
@@ -148,39 +147,41 @@ export const synthesizeSpeechAsync = async (params: MinimaxGenerateParams): Prom
                 format: 'mp3',
                 channel: 1,
             },
-        }),
-    });
+        });
 
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`MiniMax API 错误: ${error}`);
+        if (result.base_resp.status_code !== 0) {
+            throw new Error(result.base_resp.status_msg || '创建任务失败');
+        }
+
+        return { taskId: result.task_id, fileId: result.file_id };
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw new Error(`MiniMax API 错误: ${error.message}`);
+        }
+        throw error;
     }
-
-    const result: MinimaxAsyncResponse = await response.json();
-
-    if (result.base_resp.status_code !== 0) {
-        throw new Error(result.base_resp.status_msg || '创建任务失败');
-    }
-
-    return { taskId: result.task_id, fileId: result.file_id };
 };
 
 /**
  * 查询异步任务状态
+ * 通过 USERAPI 网关调用
  */
 export const queryAsyncTaskStatus = async (taskId: number): Promise<MinimaxTaskStatus> => {
-    const response = await fetch(`/api/audio/minimax?task_id=${taskId}`);
-
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`查询失败: ${error}`);
+    try {
+        return await gatewayGet<MinimaxTaskStatus>('openai', `minimax/v1/query/t2a_async_query_v2`, {
+            task_id: String(taskId),
+        });
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw new Error(`查询失败: ${error.message}`);
+        }
+        throw error;
     }
-
-    return await response.json();
 };
 
 /**
  * 轮询等待异步任务完成
+ * 通过 USERAPI 网关调用
  */
 export const waitForAsyncSynthesis = async (
     taskId: number,
@@ -189,13 +190,23 @@ export const waitForAsyncSynthesis = async (
     maxAttempts: number = 60,
     interval: number = 2000
 ): Promise<string> => {
+    const gatewayBaseUrl = process.env.NEXT_PUBLIC_USERAPI_URL || 'http://localhost:3001';
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const status = await queryAsyncTaskStatus(taskId);
 
         if (status.status === 'Success') {
             onProgress?.('合成完成!');
-            // 返回文件下载 URL
-            return `/api/audio/minimax/download?file_id=${fileId}`;
+            // 通过网关获取文件下载 URL
+            try {
+                const fileInfo = await gatewayGet<{ file: { download_url: string } }>('openai', `minimax/v1/files/retrieve`, {
+                    file_id: String(fileId),
+                });
+                return fileInfo.file?.download_url || `${gatewayBaseUrl}/api/v1/openai/minimax/v1/files/retrieve?file_id=${fileId}`;
+            } catch {
+                // 如果获取失败，返回代理 URL
+                return `${gatewayBaseUrl}/api/v1/openai/minimax/v1/files/retrieve?file_id=${fileId}`;
+            }
         }
 
         if (status.status === 'Failed') {

@@ -2,9 +2,11 @@
  * Vidu 智能多帧视频生成服务
  *
  * 文档参考: docs/vidu智能多帧.md
+ * 通过 USERAPI 网关调用
  */
 
 import { SmartSequenceItem } from '@/types';
+import { viduCreateTask, viduQueryTask, GatewayError } from './gateway';
 
 // Vidu 模型选项
 export const VIDU_MODELS = [
@@ -83,6 +85,7 @@ export function convertFramesToViduFormat(frames: SmartSequenceItem[]): {
 /**
  * 使用 Vidu 智能多帧生成视频
  * 自动压缩图片以避免请求体过大
+ * 通过 USERAPI 网关调用
  */
 export async function generateViduMultiFrame(
     frames: SmartSequenceItem[],
@@ -101,8 +104,8 @@ export async function generateViduMultiFrame(
 
         const { start_image, image_settings } = convertFramesToViduFormat(compressedFrames);
 
-        const requestBody = {
-            mode: 'multiframe',  // 使用多帧模式
+        const requestParams = {
+            mode: 'multiframe' as const,
             model: config.model || 'viduq2-turbo',
             start_image,
             image_settings,
@@ -113,77 +116,64 @@ export async function generateViduMultiFrame(
         };
 
         // 计算请求体大小
-        const bodySize = JSON.stringify(requestBody).length;
+        const bodySize = JSON.stringify(requestParams).length;
         console.log(`[Vidu] Request body size: ${(bodySize / 1024 / 1024).toFixed(2)}MB`);
 
-        const response = await fetch('/api/video/vidu', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestBody),
-        });
-
-        const result = await response.json();
-
-        if (!response.ok) {
-            return {
-                success: false,
-                error: result.error || `API 错误: ${response.status}`,
-            };
-        }
+        // 通过网关调用
+        const result = await viduCreateTask(requestParams);
 
         return {
             success: true,
-            taskId: result.taskId,
+            taskId: result.task_id,
             state: result.state,
-            videoUrl: result.videoUrl,
-            coverUrl: result.coverUrl,
-            watermarkedUrl: result.watermarkedUrl,
-            creationId: result.creationId,
+            videoUrl: result.video_url,
+            coverUrl: result.cover_url,
+            creationId: result.creation_id,
             credits: result.credits,
         };
-    } catch (error: any) {
+    } catch (error: unknown) {
+        if (error instanceof GatewayError) {
+            return {
+                success: false,
+                error: error.message,
+            };
+        }
         return {
             success: false,
-            error: error.message || '网络请求失败',
+            error: error instanceof Error ? error.message : '网络请求失败',
         };
     }
 }
 
 /**
  * 查询 Vidu 任务状态和生成结果
+ * 通过 USERAPI 网关调用
  */
 export async function queryViduTask(taskId: string): Promise<ViduTaskResponse> {
     try {
-        const response = await fetch(`/api/video/vidu?task_id=${taskId}`, {
-            method: 'GET',
-        });
-
-        const result = await response.json();
-
-        if (!response.ok) {
-            return {
-                success: false,
-                error: result.error || `查询失败: ${response.status}`,
-            };
-        }
+        // 通过网关查询
+        const result = await viduQueryTask(taskId);
 
         return {
             success: true,
-            taskId: result.taskId,
+            taskId: result.task_id,
             state: result.state,
-            videoUrl: result.videoUrl,
-            coverUrl: result.coverUrl,
-            watermarkedUrl: result.watermarkedUrl,
-            creationId: result.creationId,
+            videoUrl: result.video_url,
+            coverUrl: result.cover_url,
+            creationId: result.creation_id,
             credits: result.credits,
             error: result.error,
         };
-    } catch (error: any) {
+    } catch (error: unknown) {
+        if (error instanceof GatewayError) {
+            return {
+                success: false,
+                error: error.message,
+            };
+        }
         return {
             success: false,
-            error: error.message || '网络请求失败',
+            error: error instanceof Error ? error.message : '网络请求失败',
         };
     }
 }

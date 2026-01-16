@@ -1,12 +1,16 @@
 /**
  * Suno API 服务 - AI 音乐生成
  *
+ * 通过 USERAPI 网关调用
+ *
  * 支持两种模式:
  * - 灵感模式：只需提供描述，AI 自动生成歌词和风格
  * - 自定义模式：完全控制标题、风格标签、歌词等
  *
  * 异步生成，需要轮询查询结果
  */
+
+import { sunoGenerateInspiration, sunoGenerateCustom, sunoQuerySongs, GatewayError } from './gateway';
 
 // ============ 类型定义 ============
 
@@ -84,97 +88,146 @@ export const MUSIC_STYLE_PRESETS = [
 
 /**
  * 提交音乐生成任务（灵感模式）
+ * 通过 USERAPI 网关调用
  */
 export const generateMusic = async (params: SunoGenerateParams): Promise<{ songIds: string[] }> => {
-    const response = await fetch('/api/audio/suno', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            mode: 'inspiration',
+    try {
+        const result = await sunoGenerateInspiration({
             prompt: params.prompt,
             make_instrumental: params.make_instrumental || false,
-        }),
-    });
+        });
 
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Suno API 错误: ${error}`);
+        if (result.code !== 'success' && result.code !== 0) {
+            throw new Error((result as { message?: string }).message || '生成失败');
+        }
+
+        const data = result.data;
+        const taskId = typeof data === 'string' ? data : data?.song_id;
+        const songId2 = typeof data === 'object' ? data?.song_id_2 : undefined;
+
+        const songIds = [taskId!];
+        if (songId2) {
+            songIds.push(songId2);
+        }
+
+        return { songIds };
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw new Error(`Suno API 错误: ${error.message}`);
+        }
+        throw error;
     }
-
-    const result: SunoGenerateResponse = await response.json();
-
-    if (result.code !== 0 || !result.data) {
-        throw new Error(result.message || '生成失败');
-    }
-
-    const songIds = [result.data.song_id];
-    if (result.data.song_id_2) {
-        songIds.push(result.data.song_id_2);
-    }
-
-    return { songIds };
 };
 
 /**
  * 提交音乐生成任务（自定义模式）
+ * 通过 USERAPI 网关调用
  */
 export const generateMusicCustom = async (params: SunoCustomParams): Promise<{ songIds: string[] }> => {
-    const response = await fetch('/api/audio/suno', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            mode: 'custom',
+    try {
+        const result = await sunoGenerateCustom({
             title: params.title,
             tags: params.tags,
+            prompt: params.prompt || '',
             negative_tags: params.negative_tags,
-            prompt: params.prompt,
             mv: params.mv || 'chirp-v4',
             make_instrumental: params.make_instrumental || false,
-            generation_type: params.generation_type || 'TEXT',
-        }),
-    });
+        });
 
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Suno API 错误: ${error}`);
+        if (result.code !== 'success' && result.code !== 0) {
+            throw new Error((result as { message?: string }).message || '生成失败');
+        }
+
+        const data = result.data;
+        const taskId = typeof data === 'string' ? data : data?.song_id;
+        const songId2 = typeof data === 'object' ? data?.song_id_2 : undefined;
+
+        const songIds = [taskId!];
+        if (songId2) {
+            songIds.push(songId2);
+        }
+
+        return { songIds };
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw new Error(`Suno API 错误: ${error.message}`);
+        }
+        throw error;
     }
-
-    const result: SunoGenerateResponse = await response.json();
-
-    if (result.code !== 0 || !result.data) {
-        throw new Error(result.message || '生成失败');
-    }
-
-    const songIds = [result.data.song_id];
-    if (result.data.song_id_2) {
-        songIds.push(result.data.song_id_2);
-    }
-
-    return { songIds };
 };
 
 // ============ 通用 API ============
 
 /**
  * 查询歌曲生成状态
+ * 通过 USERAPI 网关调用
  */
 export const querySongStatus = async (songIds: string[]): Promise<SunoSongInfo[]> => {
-    const idsParam = songIds.join(',');
-    const response = await fetch(`/api/audio/suno?ids=${encodeURIComponent(idsParam)}`);
+    try {
+        const result = await sunoQuerySongs(songIds);
 
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`查询失败: ${error}`);
+        const taskData = result.data;
+        const songsList = taskData?.data || [];
+
+        // 任务还未完成，返回临时状态
+        if (!songsList || songsList.length === 0) {
+            return [{
+                id: taskData?.task_id || songIds[0],
+                title: '',
+                status: mapTaskStatus(taskData?.status),
+                error_message: taskData?.fail_reason,
+            }];
+        }
+
+        // 返回歌曲信息
+        return songsList.map((song) => ({
+            id: song.id,
+            title: song.title || '',
+            status: mapSongStatus(song.status),
+            audio_url: song.audio_url,
+            image_url: song.image_url,
+            duration: song.duration,
+            error_message: song.metadata?.error_message,
+            metadata: song.metadata,
+        }));
+    } catch (error) {
+        if (error instanceof GatewayError) {
+            throw new Error(`查询失败: ${error.message}`);
+        }
+        throw error;
     }
-
-    const result: SunoFeedResponse = await response.json();
-
-    if (result.code !== 0 || !result.data) {
-        throw new Error(result.message || '查询失败');
-    }
-
-    return result.data;
 };
+
+// 辅助函数：映射任务状态
+function mapTaskStatus(status?: string): SunoSongInfo['status'] {
+    const statusMap: Record<string, SunoSongInfo['status']> = {
+        'NOT_START': 'pending',
+        'QUEUED': 'pending',
+        'SUBMITTED': 'pending',
+        'PROCESSING': 'processing',
+        'IN_PROGRESS': 'processing',
+        'SUCCESS': 'complete',
+        'COMPLETED': 'complete',
+        'FAILURE': 'error',
+        'FAILED': 'error',
+    };
+    return statusMap[status?.toUpperCase() || ''] || 'processing';
+}
+
+// 辅助函数：映射歌曲状态
+function mapSongStatus(status?: string): SunoSongInfo['status'] {
+    const statusMap: Record<string, SunoSongInfo['status']> = {
+        'submitted': 'pending',
+        'queued': 'pending',
+        'streaming': 'processing',
+        'processing': 'processing',
+        'complete': 'complete',
+        'completed': 'complete',
+        'error': 'error',
+        'failed': 'error',
+    };
+    return statusMap[status?.toLowerCase() || ''] || 'processing';
+}
 
 /**
  * 轮询等待音乐生成完成
