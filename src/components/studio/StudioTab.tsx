@@ -66,7 +66,7 @@ const generateVideo = async (
   inputImageBase64?: string | null,
   _videoInput?: any,
   referenceImages?: string[],
-  imageRoles?: string[]
+  imageRoles?: ('first_frame' | 'last_frame')[]
 ): Promise<VideoGenResult> => {
   // 优先使用 referenceImages（首尾帧模式），否则使用单张输入图
   let finalImages: string[] | undefined;
