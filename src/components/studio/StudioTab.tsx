@@ -58,11 +58,36 @@ interface VideoGenResult {
   uris?: string[];
 }
 
-// 视频生成 (统一通过 API 路由)
+// 查询视频任务状态
+const queryVideoTask = async (taskId: string, providerId: string): Promise<{
+  status: string;
+  videoUrl?: string;
+  error?: string;
+}> => {
+  const response = await fetch(`/api/studio/video?taskId=${taskId}&providerId=${providerId}`, {
+    method: 'GET',
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `查询失败: ${response.status}`);
+  }
+  return response.json();
+};
+
+// 视频生成 (统一通过 API 路由，使用前端轮询)
 const generateVideo = async (
   prompt: string,
   model: string,
-  options: { aspectRatio?: string; count?: number; generationMode?: any; resolution?: string; duration?: number; videoConfig?: any; viduSubjects?: { id: string; images: string[] }[] } = {},
+  options: {
+    aspectRatio?: string;
+    count?: number;
+    generationMode?: any;
+    resolution?: string;
+    duration?: number;
+    videoConfig?: any;
+    viduSubjects?: { id: string; images: string[] }[];
+    onProgress?: (progress: string) => void;
+  } = {},
   inputImageBase64?: string | null,
   _videoInput?: any,
   referenceImages?: string[],
@@ -115,6 +140,7 @@ const generateVideo = async (
     requestBody.imageRoles = finalImageRoles;
   }
 
+  // 1. 创建任务
   const response = await fetch('/api/studio/video', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -124,13 +150,61 @@ const generateVideo = async (
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `API错误: ${response.status}`);
   }
-  const result = await response.json();
-  return {
-    uri: result.videoUrl,
-    isFallbackImage: false,
-    videoMetadata: { taskId: result.taskId },
-    uris: [result.videoUrl],
-  };
+  const createResult = await response.json();
+  const { taskId, providerId } = createResult;
+
+  if (!taskId || !providerId) {
+    throw new Error('任务创建失败：未返回 taskId 或 providerId');
+  }
+
+  console.log(`[generateVideo] Task created: taskId=${taskId}, providerId=${providerId}`);
+  options.onProgress?.('任务已创建，等待生成...');
+
+  // 2. 前端轮询等待结果 (最多15分钟)
+  const maxAttempts = 180;
+  let attempts = 0;
+
+  while (attempts < maxAttempts) {
+    await new Promise(resolve => setTimeout(resolve, 5000)); // 每5秒查询一次
+    attempts++;
+
+    try {
+      const queryResult = await queryVideoTask(taskId, providerId);
+      console.log(`[generateVideo] Query result:`, queryResult);
+
+      if (queryResult.status === 'SUCCESS') {
+        if (queryResult.videoUrl) {
+          return {
+            uri: queryResult.videoUrl,
+            isFallbackImage: false,
+            videoMetadata: { taskId, providerId },
+            uris: [queryResult.videoUrl],
+          };
+        }
+        throw new Error('视频生成成功但未返回URL');
+      }
+
+      if (queryResult.status === 'FAILURE') {
+        throw new Error(`视频生成失败: ${queryResult.error || '未知错误'}`);
+      }
+
+      // 更新进度
+      const progressText = queryResult.status === 'IN_PROGRESS'
+        ? `生成中... (${attempts * 5}s)`
+        : `等待中... (${attempts * 5}s)`;
+      options.onProgress?.(progressText);
+
+    } catch (error: any) {
+      // 如果是生成失败的错误，直接抛出
+      if (error.message.includes('视频生成失败')) {
+        throw error;
+      }
+      // 查询错误，继续重试
+      console.error('[generateVideo] Query error:', error.message);
+    }
+  }
+
+  throw new Error('视频生成超时，请稍后重试');
 };
 import { getGenerationStrategy } from '@/services/videoStrategies';
 import { createMusicCustom, SunoSongInfo } from '@/services/sunoService';
@@ -2143,6 +2217,9 @@ export default function StudioTab() {
                         console.log(`[VideoGen] viduSubjects:`, JSON.stringify(viduSubjects.map(s => ({ id: s.id, imageCount: s.images.length }))));
                     }
 
+                    // 确定要更新进度的节点 ID
+                    const progressNodeId = shouldCreateNewNode && factoryNodeId ? factoryNodeId : id;
+
                     const res = await generateVideo(
                         strategy.finalPrompt,
                         usedModel,
@@ -2154,12 +2231,18 @@ export default function StudioTab() {
                             duration: node.data.duration,  // 视频时长
                             videoConfig: node.data.videoConfig,  // 厂商扩展配置
                             viduSubjects,  // Vidu 主体参考
+                            onProgress: (progress) => {
+                                handleNodeUpdate(progressNodeId, { progress });
+                            },
                         },
                         useViduSubjectMode ? null : finalInputImage,  // 主体模式不使用输入图
                         strategy.videoInput,
                         useViduSubjectMode ? undefined : strategy.referenceImages,  // 主体模式不使用首尾帧
                         useViduSubjectMode ? undefined : strategy.imageRoles  // 主体模式不使用图片角色
                     );
+
+                    // 生成完成，清除进度
+                    handleNodeUpdate(progressNodeId, { progress: undefined });
 
                     if (shouldCreateNewNode && factoryNodeId) {
                         // 有视频节点：更新新节点（保存实际使用的模型和比例）
@@ -2288,6 +2371,9 @@ export default function StudioTab() {
                     // Vidu 主体参考模式：不使用首尾帧数据，避免冲突
                     const useViduSubjectMode = isViduModel && viduSubjects && viduSubjects.length > 0;
 
+                    // 确定要更新进度的节点 ID
+                    const progressNodeId = shouldCreateNewNode && newFactoryNodeId ? newFactoryNodeId : id;
+
                     const res = await generateVideo(
                         strategy.finalPrompt,
                         usedModel,
@@ -2299,12 +2385,18 @@ export default function StudioTab() {
                             duration: node.data.duration,  // 视频时长
                             videoConfig: node.data.videoConfig,  // 厂商扩展配置
                             viduSubjects,  // Vidu 主体参考
+                            onProgress: (progress) => {
+                                handleNodeUpdate(progressNodeId, { progress });
+                            },
                         },
                         useViduSubjectMode ? null : finalInputImage,  // 主体模式不使用输入图
                         videoInput || strategy.videoInput,
                         useViduSubjectMode ? undefined : strategy.referenceImages,  // 主体模式不使用首尾帧
                         useViduSubjectMode ? undefined : strategy.imageRoles  // 主体模式不使用图片角色
                     );
+
+                    // 生成完成，清除进度
+                    handleNodeUpdate(progressNodeId, { progress: undefined });
 
                     if (shouldCreateNewNode && newFactoryNodeId) {
                         // 有视频节点：更新新节点（保存实际使用的模型和比例）
