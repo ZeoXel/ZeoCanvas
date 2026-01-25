@@ -206,12 +206,19 @@ export async function GET(request: NextRequest) {
 
             case 'vidu': {
                 const result = await viduService.queryTask(taskId);
-                // 映射状态
-                if (result.state === 'success') status = 'SUCCESS';
-                else if (result.state === 'failed') status = 'FAILURE';
-                else status = 'IN_PROGRESS';
-                videoUrl = result.creations?.[0]?.url;
-                error = result.err_code;
+                // 映射状态（优先检查 err_code，因为它可能在 state 不是 failed 时就出现）
+                if (result.err_code) {
+                    status = 'FAILURE';
+                    error = result.err_code;
+                } else if (result.state === 'success') {
+                    status = 'SUCCESS';
+                    videoUrl = result.creations?.[0]?.url;
+                } else if (result.state === 'failed') {
+                    status = 'FAILURE';
+                    error = result.err_code || '视频生成失败';
+                } else {
+                    status = 'IN_PROGRESS';
+                }
                 break;
             }
 
