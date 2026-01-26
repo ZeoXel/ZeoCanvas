@@ -6,9 +6,11 @@
  * - 页面刷新后恢复轮询
  * - 任务完成后自动清理
  * - 自动压缩图片避免 Vercel 请求体大小限制
+ * - 集成 USERAPI 任务追踪（通过传递 API Key）
  */
 
 import { compressImages } from '@/services/providers/shared';
+import { getApiKey } from './userApiService';
 
 const STORAGE_KEY = 'zeocanvas_video_tasks';
 
@@ -74,7 +76,15 @@ export const removeTask = (taskId: string): void => {
 
 // 查询任务状态
 export const queryTaskStatus = async (taskId: string, provider: string): Promise<VideoTaskResult> => {
-  const response = await fetch(`/api/studio/video?taskId=${taskId}&provider=${provider}`);
+  const apiKey = getApiKey();
+  const headers: HeadersInit = {};
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  const response = await fetch(`/api/studio/video?taskId=${taskId}&provider=${provider}`, {
+    headers,
+  });
   if (!response.ok) {
     throw new Error(`Query failed: ${response.status}`);
   }
@@ -163,9 +173,15 @@ export const createVideoTask = async (
     );
   }
 
+  const apiKey = getApiKey();
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
   const response = await fetch('/api/studio/video', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(compressedBody),
   });
 

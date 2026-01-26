@@ -5,6 +5,10 @@
  *
  * POST - 创建任务，立即返回 taskId
  * GET  - 查询任务状态，成功后自动上传到 COS 存储
+ *
+ * 集成 USERAPI 任务追踪：
+ * - 创建任务时记录到 USERAPI
+ * - 任务完成时更新状态和记录消费
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,6 +17,16 @@ import * as veoService from '@/services/providers/veo';
 import * as seedanceService from '@/services/providers/seedance';
 import * as viduService from '@/services/providers/vidu';
 import { smartUploadVideoServer, buildMediaPathServer } from '@/services/cosStorageServer';
+import { createUserApiTask, updateUserApiTask, recordConsumptionServer } from '@/services/userApiTasks';
+
+// 从请求头获取 API Key
+function getApiKeyFromRequest(request: NextRequest): string | null {
+    const authHeader = request.headers.get('Authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+        return authHeader.slice(7);
+    }
+    return null;
+}
 
 // Route Segment Config
 export const maxDuration = 60; // 创建任务只需要很短时间
@@ -147,6 +161,22 @@ export async function POST(request: NextRequest) {
 
         console.log(`[Studio Video API] Task created: ${taskId}, provider: ${providerId}`);
 
+        // 记录任务到 USERAPI（异步，不阻塞返回）
+        const apiKey = getApiKeyFromRequest(request);
+        if (apiKey) {
+            createUserApiTask(apiKey, {
+                taskId,
+                platform: providerId,
+                action: body.images?.length > 0 ? 'img2video' : 'text2video',
+                requestData: {
+                    model,
+                    prompt: prompt?.slice(0, 200),
+                    duration,
+                    aspectRatio,
+                },
+            }).catch(err => console.warn('[Studio Video API] Failed to create USERAPI task:', err));
+        }
+
         return NextResponse.json({
             success: true,
             taskId,
@@ -231,6 +261,33 @@ export async function GET(request: NextRequest) {
             } catch (uploadError: any) {
                 console.warn(`[Studio Video API] COS upload failed, using original URL:`, uploadError.message);
                 // 上传失败时使用原始 URL
+            }
+        }
+
+        // 更新 USERAPI 任务状态并记录消费（任务完成或失败时）
+        const apiKey = getApiKeyFromRequest(request);
+        if (apiKey && (status === 'SUCCESS' || status === 'FAILURE')) {
+            // 更新任务状态
+            updateUserApiTask(apiKey, taskId, {
+                status: status === 'SUCCESS' ? 'success' : 'failure',
+                failReason: error,
+                responseData: { videoUrl },
+            }).catch(err => console.warn('[Studio Video API] Failed to update USERAPI task:', err));
+
+            // 记录消费（仅成功时）
+            if (status === 'SUCCESS') {
+                recordConsumptionServer(apiKey, {
+                    service: 'video',
+                    provider,
+                    model: provider, // 实际模型信息在创建时已存储
+                    usage: {
+                        durationSeconds: 4, // 默认时长，实际应从任务数据获取
+                        resolution: '720p',
+                    },
+                    metadata: {
+                        taskId,
+                    },
+                }).catch(err => console.warn('[Studio Video API] Failed to record consumption:', err));
             }
         }
 
