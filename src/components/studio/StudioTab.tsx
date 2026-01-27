@@ -10,12 +10,15 @@ import { AssistantPanel } from './AssistantPanel';
 import { ImageCropper } from './ImageCropper';
 import { ImageEditOverlay } from './ImageEditOverlay';
 import { generateViduMultiFrame, queryViduTask, ViduMultiFrameConfig } from '@/services/viduService';
+import { recordAudioConsumption, recordImageConsumption, recordVideoConsumption } from '@/services/consumptionTracker';
 import { SettingsModal } from './SettingsModal';
 import { AppNode, NodeType, NodeStatus, Connection, ContextMenuState, Group, Workflow, Canvas, VideoGenerationMode, Subject } from '@/types';
 import { SubjectEditor } from './subject';
 import { urlToBase64 } from '@/services/providers';
 import { parseSubjectReferences, cleanSubjectReferences, getPrimaryImage } from '@/services/subjectService';
 import { getSubjectImageSrc } from '@/services/cosStorage';
+import { UserInfoWidget } from './UserInfoWidget';
+import { UserInfoModal } from './UserInfoModal';
 
 // ==================== API 调用层 ====================
 
@@ -448,6 +451,10 @@ export default function StudioTab() {
 
     // Settings State
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // User Info State
+    const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+    const [userModalTab, setUserModalTab] = useState<'account' | 'credits'>('account');
 
     // Canvas Management State
     const [canvases, setCanvases] = useState<Canvas[]>([]);
@@ -1863,37 +1870,13 @@ export default function StudioTab() {
         setNodes(prev => {
             const newNodes = prev.map(n => {
                 if (n.id === id) {
-                    // 深度合并 firstLastFrameData 和 multiFrameData（避免快速连续上传时丢失数据）
+                    // 深度合并 firstLastFrameData（避免快速连续上传时丢失数据）
                     const mergedData = { ...n.data, ...data };
                     if (data.firstLastFrameData) {
                         mergedData.firstLastFrameData = {
                             ...n.data.firstLastFrameData,
                             ...data.firstLastFrameData
                         };
-                    }
-                    // 深度合并 multiFrameData - 支持追加和替换两种模式
-                    if (data.multiFrameData) {
-                        const existingFrames = n.data.multiFrameData?.frames || [];
-                        const newFrames = data.multiFrameData.frames || [];
-                        let finalFrames: any[];
-
-                        // 如果标记为追加模式，将新帧添加到现有帧后面
-                        if (data.multiFrameData._appendFrames) {
-                            const existingIds = new Set(existingFrames.map((f: any) => f.id));
-                            const trulyNewFrames = newFrames.filter((f: any) => !existingIds.has(f.id));
-                            finalFrames = [...existingFrames, ...trulyNewFrames].slice(0, 10);
-                        } else {
-                            // 替换模式：直接使用新帧数组
-                            finalFrames = newFrames;
-                        }
-
-                        mergedData.multiFrameData = {
-                            ...n.data.multiFrameData,
-                            ...data.multiFrameData,
-                            frames: finalFrames
-                        };
-                        // 清除内部标志
-                        delete mergedData.multiFrameData._appendFrames;
                     }
                     const updated = { ...n, data: mergedData, title: title || n.title };
                     if (size) { if (size.width) updated.width = size.width; if (size.height) updated.height = size.height; }
@@ -2113,6 +2096,16 @@ export default function StudioTab() {
                         // 空节点：结果直接在当前节点显示，组图结果统一呈现（保存实际使用的模型和比例）
                         handleNodeUpdate(id, { image: res[0], images: res, imageCount, model: usedModel, aspectRatio: usedAspectRatio });
                     }
+
+                    // 记录图像生成消耗
+                    const imageProvider = usedModel.includes('seedream') ? 'seedream' : 'nano-banana';
+                    recordImageConsumption({
+                        provider: imageProvider,
+                        model: usedModel,
+                        imageCount: res.length,
+                        resolution: node.data.resolution,
+                        prompt: prompt.slice(0, 100),
+                    }).catch(err => console.warn('[Image] Failed to record consumption:', err));
                 } catch (imgErr: any) {
                     if (shouldCreateNewNode && newNodeId) {
                         // 新节点显示错误
@@ -2190,7 +2183,7 @@ export default function StudioTab() {
                             console.log(`[VideoGen] Found ${subjectRefs.length} subject references for Vidu:`, subjectRefs.map(s => s.name));
                             viduSubjects = subjectRefs.map(ref => ({
                                 id: ref.name, // 使用名称作为 ID，用于 prompt 中的 @引用
-                                images: ref.subject.images.map(img => getSubjectImageSrc(img)).filter(Boolean).slice(0, 3) as string[], // Vidu 最多支持 3 张图片
+                                images: ref.subject.images.map(img => getSubjectImageSrc(img)).slice(0, 3), // Vidu 最多支持 3 张图片
                             }));
                             // 保留 prompt 中的 @主体名称，Vidu API 需要用它来关联
                             processedPrompt = prompt;
@@ -2266,6 +2259,19 @@ export default function StudioTab() {
                         } else {
                             handleNodeUpdate(id, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris, model: usedModel, aspectRatio: usedAspectRatio });
                         }
+                    }
+
+                    // 记录视频生成消耗（非 Vidu 模型）
+                    if (!res.isFallbackImage && !usedModel.includes('vidu')) {
+                        const videoProvider = usedModel.includes('seedance') ? 'seedance' : 'veo';
+                        recordVideoConsumption({
+                            provider: videoProvider,
+                            model: usedModel,
+                            taskId: res.videoMetadata?.taskId || '',
+                            durationSeconds: node.data.duration || 4,
+                            resolution: (node.data.resolution as '480p' | '720p' | '1080p') || '720p',
+                            prompt: strategy.finalPrompt?.slice(0, 100),
+                        }).catch(err => console.warn('[Video] Failed to record consumption:', err));
                     }
                 } catch (videoErr: any) {
                     if (shouldCreateNewNode && factoryNodeId) {
@@ -2349,7 +2355,7 @@ export default function StudioTab() {
                             console.log(`[VideoFactory] Found ${subjectRefs.length} subject references for Vidu:`, subjectRefs.map(s => s.name));
                             viduSubjects = subjectRefs.map(ref => ({
                                 id: ref.name,
-                                images: ref.subject.images.map(img => getSubjectImageSrc(img)).filter(Boolean).slice(0, 3) as string[],
+                                images: ref.subject.images.map(img => getSubjectImageSrc(img)).slice(0, 3),
                             }));
                             processedPrompt = prompt;
                         } else {
@@ -2416,6 +2422,19 @@ export default function StudioTab() {
                             handleNodeUpdate(id, { videoUri: res.uri, videoMetadata: res.videoMetadata, videoUris: res.uris, model: usedModel, aspectRatio: usedAspectRatio });
                         }
                     }
+
+                    // 记录视频生成消耗（非 Vidu 模型，Vidu 在 queryViduTask 中记录）
+                    if (!res.isFallbackImage && !usedModel.includes('vidu')) {
+                        const videoProvider = usedModel.includes('seedance') ? 'seedance' : 'veo';
+                        recordVideoConsumption({
+                            provider: videoProvider,
+                            model: usedModel,
+                            taskId: res.videoMetadata?.taskId || '',
+                            durationSeconds: node.data.duration || 4,
+                            resolution: (node.data.resolution as '480p' | '720p' | '1080p') || '720p',
+                            prompt: strategy.finalPrompt?.slice(0, 100),
+                        }).catch(err => console.warn('[VideoFactory] Failed to record consumption:', err));
+                    }
                 } catch (videoErr: any) {
                     if (shouldCreateNewNode && newFactoryNodeId) {
                         handleNodeUpdate(newFactoryNodeId, { error: videoErr.message });
@@ -2472,6 +2491,14 @@ export default function StudioTab() {
                         },
                     });
 
+                    // 记录音频消耗
+                    recordAudioConsumption({
+                        provider: 'suno',
+                        model: musicConfig.mv || 'chirp-v4',
+                        songCount: songs.length,
+                        prompt: prompt,
+                    }).catch(err => console.warn('[Suno] Failed to record consumption:', err));
+
                 } else {
                     // MiniMax 语音合成
                     const voiceConfig = node.data.voiceConfig || {};
@@ -2502,6 +2529,14 @@ export default function StudioTab() {
                     });
 
                     handleNodeUpdate(id, { audioUri });
+
+                    // 记录语音合成消耗
+                    recordAudioConsumption({
+                        provider: 'minimax',
+                        model: params.model || 'speech-2.6-hd',
+                        characterCount: prompt.length,
+                        prompt: prompt.slice(0, 100),
+                    }).catch(err => console.warn('[MiniMax] Failed to record consumption:', err));
                 }
 
             } else if (node.type === NodeType.IMAGE_EDITOR) {
@@ -2594,35 +2629,9 @@ export default function StudioTab() {
 
             } else if (node.type === NodeType.MULTI_FRAME_VIDEO) {
                 // 智能多帧视频生成
-                let frames = node.data.multiFrameData?.frames || [];
-
-                // 如果节点内没有帧，从上游输入节点收集图片作为帧
-                if (frames.length === 0 && inputs.length > 0) {
-                    const inputImages: string[] = [];
-                    inputs.forEach(n => {
-                        if (n?.data.image) inputImages.push(n.data.image);
-                    });
-
-                    // 将输入图片转换为帧格式
-                    frames = inputImages.map((src, index) => ({
-                        id: `mf-input-${Date.now()}-${index}`,
-                        src,
-                        transition: { duration: 4, prompt: '' }
-                    }));
-
-                    // 保存到节点数据
-                    if (frames.length > 0) {
-                        handleNodeUpdate(id, {
-                            multiFrameData: {
-                                ...node.data.multiFrameData,
-                                frames,
-                            }
-                        });
-                    }
-                }
-
+                const frames = node.data.multiFrameData?.frames || [];
                 if (frames.length < 2) {
-                    throw new Error('智能多帧至少需要2张关键帧（请上传图片或连接图片节点）');
+                    throw new Error('智能多帧至少需要2张关键帧');
                 }
 
                 const viduConfig: ViduMultiFrameConfig = {
@@ -2653,11 +2662,21 @@ export default function StudioTab() {
                     let attempts = 0;
                     let finalResult = result;
 
+                    // 计算视频总时长（用于消耗记录）
+                    const totalDuration = frames.slice(0, -1).reduce((sum, frame) => {
+                        return sum + (frame.transition?.duration || 5);
+                    }, 0);
+
                     while (attempts < maxAttempts) {
                         await new Promise(resolve => setTimeout(resolve, 5000)); // 每 5 秒查询一次
                         attempts++;
 
-                        const queryResult = await queryViduTask(result.taskId);
+                        const queryResult = await queryViduTask(result.taskId, {
+                            model: viduConfig.model,
+                            resolution: viduConfig.resolution,
+                            durationSeconds: totalDuration,
+                            recordConsumption: true,
+                        });
 
                         if (!queryResult.success) {
                             throw new Error(queryResult.error || '查询任务状态失败');
@@ -4348,6 +4367,23 @@ export default function StudioTab() {
                         <Scan size={14} strokeWidth={2.5} />
                     </button>
                 </div>
+
+                {/* 用户信息入口 - 左下角 */}
+                <div className="absolute bottom-8 left-8 z-50 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                    <UserInfoWidget
+                        onOpenModal={(tab) => {
+                            setUserModalTab(tab);
+                            setIsUserModalOpen(true);
+                        }}
+                    />
+                </div>
+
+                {/* User Info Modal (unified) */}
+                <UserInfoModal
+                    isOpen={isUserModalOpen}
+                    onClose={() => setIsUserModalOpen(false)}
+                    defaultTab={userModalTab}
+                />
 
                 {/* Subject Editor Modal */}
                 {isSubjectEditorOpen && (
