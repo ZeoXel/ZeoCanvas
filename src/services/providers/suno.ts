@@ -14,13 +14,15 @@ import { wait } from './shared';
 
 // ==================== 配置 ====================
 
-const getSunoConfig = () => {
+type GatewayConfig = { baseUrl?: string; apiKey?: string };
+
+const getSunoConfig = (gateway?: GatewayConfig) => {
   const baseUrl = process.env.SUNO_API_BASE
     || process.env.OPENAI_BASE_URL
     || process.env.OPENAI_API_BASE
     || process.env.GATEWAY_BASE_URL
     || 'https://api.lsaigc.com';
-  const apiKey = process.env.SUNO_API_KEY || process.env.OPENAI_API_KEY;
+  const apiKey = gateway?.apiKey || process.env.SUNO_API_KEY || process.env.OPENAI_API_KEY;
   return { baseUrl, apiKey };
 };
 
@@ -75,8 +77,11 @@ export interface QueryResult {
 /**
  * 灵感模式生成 - 自然语言描述
  */
-export const generateInspiration = async (options: InspirationOptions): Promise<GenerateResult> => {
-  const { baseUrl, apiKey } = getSunoConfig();
+export const generateInspiration = async (
+  options: InspirationOptions,
+  gateway?: GatewayConfig
+): Promise<GenerateResult> => {
+  const { baseUrl, apiKey } = getSunoConfig(gateway);
 
   if (!apiKey) {
     throw new Error('Suno API Key 未配置');
@@ -121,8 +126,11 @@ export const generateInspiration = async (options: InspirationOptions): Promise<
 /**
  * 自定义模式生成 - 完整控制
  */
-export const generateCustom = async (options: CustomOptions): Promise<GenerateResult> => {
-  const { baseUrl, apiKey } = getSunoConfig();
+export const generateCustom = async (
+  options: CustomOptions,
+  gateway?: GatewayConfig
+): Promise<GenerateResult> => {
+  const { baseUrl, apiKey } = getSunoConfig(gateway);
 
   if (!apiKey) {
     throw new Error('Suno API Key 未配置');
@@ -178,8 +186,11 @@ export const generateCustom = async (options: CustomOptions): Promise<GenerateRe
 /**
  * 查询歌曲状态
  */
-export const querySongs = async (songIds: string[]): Promise<QueryResult> => {
-  const { baseUrl, apiKey } = getSunoConfig();
+export const querySongs = async (
+  songIds: string[],
+  gateway?: GatewayConfig
+): Promise<QueryResult> => {
+  const { baseUrl, apiKey } = getSunoConfig(gateway);
 
   if (!apiKey) {
     throw new Error('Suno API Key 未配置');
@@ -253,12 +264,13 @@ export const querySongs = async (songIds: string[]): Promise<QueryResult> => {
 export const generateAndWait = async (
   options: InspirationOptions | CustomOptions,
   mode: 'inspiration' | 'custom' = 'inspiration',
-  onProgress?: (status: string, progress?: string) => void
+  onProgress?: (status: string, progress?: string) => void,
+  gateway?: GatewayConfig
 ): Promise<SongInfo[]> => {
   // 创建任务
   const result = mode === 'inspiration'
-    ? await generateInspiration(options as InspirationOptions)
-    : await generateCustom(options as CustomOptions);
+    ? await generateInspiration(options as InspirationOptions, gateway)
+    : await generateCustom(options as CustomOptions, gateway);
 
   // 轮询等待结果 (最多10分钟)
   const maxAttempts = 120;
@@ -268,7 +280,7 @@ export const generateAndWait = async (
     await wait(5000);
     attempts++;
 
-    const queryResult = await querySongs(result.song_ids);
+    const queryResult = await querySongs(result.song_ids, gateway);
     onProgress?.(queryResult.task_status || 'processing', queryResult.progress);
 
     // 检查是否所有歌曲都完成

@@ -31,11 +31,13 @@ export interface VeoTaskResult {
   };
 }
 
-const getGatewayConfig = () => {
-  const baseUrl = process.env.OPENAI_BASE_URL
+type GatewayConfig = { baseUrl?: string; apiKey?: string };
+
+const getGatewayConfig = (gateway?: GatewayConfig) => {
+  const baseUrl = gateway?.baseUrl || process.env.OPENAI_BASE_URL
     || process.env.GATEWAY_BASE_URL
     || 'https://api.lsaigc.com';
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = gateway?.apiKey || process.env.OPENAI_API_KEY;
   return { baseUrl, apiKey };
 };
 
@@ -69,25 +71,34 @@ const normalizeTaskResult = (taskId: string, payload: any): VeoTaskResult => {
 /**
  * 创建 Veo 视频生成任务
  */
-export const createTask = async (options: VeoGenerateOptions): Promise<string> => {
-  const { baseUrl, apiKey } = getGatewayConfig();
+export const createTask = async (
+  options: VeoGenerateOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
+  const { baseUrl, apiKey } = getGatewayConfig(gateway);
 
   if (!apiKey) {
     throw new Error('API Key未配置，请在设置中配置');
   }
 
+  // 根据文档，应该使用 JSON 格式和 /v2/videos/generations 端点
+  // 但网关可能还在使用旧的配置，所以我们尝试多个端点
   const body: any = {
     prompt: options.prompt,
     model: options.model || 'veo3.1',
   };
 
+  // images 字段是必需的（根据文档），即使是文生视频也要传空数组
+  body.images = options.images && options.images.length > 0 ? options.images : [];
+
   if (options.aspectRatio) body.aspect_ratio = options.aspectRatio;
   if (options.duration) body.duration = options.duration;
   if (options.enhancePrompt !== undefined) body.enhance_prompt = options.enhancePrompt;
   if (options.enableUpsample !== undefined) body.enable_upsample = options.enableUpsample;
-  if (options.images && options.images.length > 0) body.images = options.images;
 
-  const response = await fetch(`${baseUrl}/v1/video/generations`, {
+  // 尝试 v2 端点（根据文档）
+  let endpoint = `${baseUrl}/v2/videos/generations`;
+  let response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -95,6 +106,20 @@ export const createTask = async (options: VeoGenerateOptions): Promise<string> =
     },
     body: JSON.stringify(body),
   });
+
+  // 如果 v2 端点返回 HTML 或 404，回退到 v1 端点
+  if (!response.ok || response.headers.get('content-type')?.includes('text/html')) {
+    console.warn('[Veo] v2 endpoint failed, trying v1...');
+    endpoint = `${baseUrl}/v1/video/generations`;
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -112,8 +137,8 @@ export const createTask = async (options: VeoGenerateOptions): Promise<string> =
 /**
  * 查询 Veo 任务状态
  */
-export const queryTask = async (taskId: string): Promise<VeoTaskResult> => {
-  const { baseUrl, apiKey } = getGatewayConfig();
+export const queryTask = async (taskId: string, gateway?: GatewayConfig): Promise<VeoTaskResult> => {
+  const { baseUrl, apiKey } = getGatewayConfig(gateway);
 
   if (!apiKey) {
     throw new Error('API Key未配置');
@@ -140,9 +165,10 @@ export const queryTask = async (taskId: string): Promise<VeoTaskResult> => {
  */
 export const generateVideo = async (
   options: VeoGenerateOptions,
-  onProgress?: (progress: string) => void
+  onProgress?: (progress: string) => void,
+  gateway?: GatewayConfig
 ): Promise<VideoGenerationResult> => {
-  const taskId = await createTask(options);
+  const taskId = await createTask(options, gateway);
 
   // 轮询等待结果
   const maxAttempts = 120;  // 最多等待10分钟 (120 * 5秒)
@@ -152,7 +178,7 @@ export const generateVideo = async (
     await wait(5000);
     attempts++;
 
-    const result = await queryTask(taskId);
+    const result = await queryTask(taskId, gateway);
 
     if (result.progress) {
       onProgress?.(result.progress);

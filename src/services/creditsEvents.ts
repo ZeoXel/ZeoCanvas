@@ -10,6 +10,9 @@ export const CREDITS_UPDATED_EVENT = 'credits:updated';
 export interface CreditsUpdatedEventDetail {
   credits: number;
   balance: number;
+  total?: number;
+  used?: number;
+  remaining?: number;
   type: 'consumption' | 'recharge' | 'refund' | 'reward';
   service?: string;
 }

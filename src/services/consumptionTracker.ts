@@ -1,9 +1,6 @@
 /**
  * 消耗追踪服务
- * 在API调用完成后记录消耗到USERAPI网关
- *
- * 重要：积分计算由 USERAPI 网关统一处理
- * 此服务只传递用量信息，不再本地计算积分
+ * API调用完成后触发余额刷新（由网关实时计费）
  */
 
 import { getApiKey } from './userApiService';
@@ -39,7 +36,7 @@ export interface ConsumptionRecord {
   };
 }
 
-// USERAPI 响应
+// 余额刷新响应
 interface RecordConsumptionResponse {
   success: boolean;
   transaction?: {
@@ -47,79 +44,90 @@ interface RecordConsumptionResponse {
     credits: number;
     balance: number;
   };
-  calculation?: {
-    service: string;
-    provider: string;
-    model: string;
-    usage: UsageData;
-    calculatedCredits: number;
+  balanceInfo?: {
+    total: number;
+    used: number;
+    remaining: number;
   };
   error?: string;
 }
 
-/**
- * 获取USERAPI基础URL
- */
-const getUserApiBaseUrl = (): string => {
-  return process.env.NEXT_PUBLIC_USERAPI_URL || 'http://localhost:3001';
+interface BalanceFastResponse {
+  success: boolean;
+  data?: {
+    balance: number;
+    totalRecharge: number;
+    apiConsumption: number;
+  };
+  error?: string;
+  message?: string;
+}
+
+const normalizeBalanceInfo = (data: BalanceFastResponse['data']) => {
+  const total = Math.round((data?.totalRecharge || 0) * 10);
+  const used = Math.round((data?.apiConsumption || 0) * 10);
+  const remaining = Number(data?.balance || 0);
+  return { total, used, remaining };
 };
 
 /**
- * 记录消耗到USERAPI网关
- * USERAPI 会根据 usage 自动计算积分
+ * 刷新用户余额（网关实时计费）
  */
 export async function recordConsumption(record: ConsumptionRecord): Promise<RecordConsumptionResponse> {
-  const baseUrl = getUserApiBaseUrl();
   const apiKey = getApiKey();
 
   if (!apiKey) {
-    console.warn('[ConsumptionTracker] No API key, skipping consumption recording');
+    console.warn('[ConsumptionTracker] No API key, skipping balance refresh');
     return { success: false, error: 'No API key' };
   }
 
   try {
-    const response = await fetch(`${baseUrl}/api/credits/consume`, {
+    const response = await fetch('/api/user/balance-fast', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        service: record.service,
-        provider: record.provider,
-        model: record.model,
-        // 传递用量信息，让 USERAPI 计算积分
-        usage: record.usage,
-        metadata: record.metadata,
+        apiKey,
       }),
     });
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      console.error('[ConsumptionTracker] Failed to record consumption:', error);
-      return { success: false, error: error.error || 'Failed to record' };
+      console.error('[ConsumptionTracker] Failed to refresh balance:', error);
+      return { success: false, error: error.error || 'Failed to refresh balance' };
     }
 
-    const result = await response.json();
-    console.log('[ConsumptionTracker] Consumption recorded:', result);
+    const result: BalanceFastResponse = await response.json();
+    if (!result.success || !result.data) {
+      return { success: false, error: result.error || result.message || 'Invalid balance response' };
+    }
+
+    const balanceInfo = normalizeBalanceInfo(result.data);
+    console.log('[ConsumptionTracker] Balance refreshed:', balanceInfo);
 
     // 触发积分更新事件，通知 UI 刷新
-    if (result.transaction) {
-      emitCreditsUpdated({
-        credits: result.transaction.credits,
-        balance: result.transaction.balance,
-        type: 'consumption',
-        service: record.service,
-      });
-    }
+    emitCreditsUpdated({
+      credits: 0,
+      balance: balanceInfo.remaining,
+      total: balanceInfo.total,
+      used: balanceInfo.used,
+      remaining: balanceInfo.remaining,
+      type: 'consumption',
+      service: record.service,
+    });
 
     return {
       success: true,
-      transaction: result.transaction,
-      calculation: result.calculation,
+      transaction: {
+        id: 'balance-refresh',
+        credits: 0,
+        balance: balanceInfo.remaining,
+      },
+      balanceInfo,
     };
   } catch (error) {
-    console.error('[ConsumptionTracker] Error recording consumption:', error);
+    console.error('[ConsumptionTracker] Error refreshing balance:', error);
     return { success: false, error: String(error) };
   }
 }
@@ -249,7 +257,6 @@ export async function checkSufficientCredits(requiredCredits: number): Promise<{
   balance: number;
   required: number;
 }> {
-  const baseUrl = getUserApiBaseUrl();
   const apiKey = getApiKey();
 
   if (!apiKey) {
@@ -257,18 +264,18 @@ export async function checkSufficientCredits(requiredCredits: number): Promise<{
   }
 
   try {
-    const response = await fetch(`${baseUrl}/api/credits/balance`, {
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
+    const response = await fetch('/api/user/balance-fast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
     });
 
     if (!response.ok) {
       return { sufficient: false, balance: 0, required: requiredCredits };
     }
 
-    const data = await response.json();
-    const balance = data.remaining || 0;
+    const result: BalanceFastResponse = await response.json();
+    const balance = Number(result?.data?.balance || 0);
 
     return {
       sufficient: balance >= requiredCredits,
@@ -291,36 +298,18 @@ export async function fetchEstimatedCredits(
   model: string,
   usage: UsageData
 ): Promise<number> {
-  const baseUrl = getUserApiBaseUrl();
-  const apiKey = getApiKey();
-
-  if (!apiKey) {
-    return 0;
-  }
-
   try {
-    const response = await fetch(`${baseUrl}/api/credits/pricing`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        service: type,
-        provider,
-        model,
-        usage,
-      }),
+    return estimateCreditsLocally(type, {
+      durationSeconds: usage.durationSeconds,
+      resolution: usage.resolution,
+      imageCount: usage.imageCount,
+      songCount: usage.songCount,
+      characterCount: usage.characterCount,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
     });
-
-    if (!response.ok) {
-      return 0;
-    }
-
-    const data = await response.json();
-    return data.calculatedCredits || 0;
   } catch (error) {
-    console.error('[ConsumptionTracker] Error fetching estimate:', error);
+    console.error('[ConsumptionTracker] Error estimating credits:', error);
     return 0;
   }
 }

@@ -13,13 +13,15 @@ import { wait } from './shared';
 
 // ==================== 配置 ====================
 
-const getMinimaxConfig = () => {
+type GatewayConfig = { baseUrl?: string; apiKey?: string };
+
+const getMinimaxConfig = (gateway?: GatewayConfig) => {
   const baseUrl = process.env.MINIMAX_API_BASE
     || process.env.OPENAI_BASE_URL
     || process.env.OPENAI_API_BASE
     || process.env.GATEWAY_BASE_URL
     || 'https://api.lsaigc.com';
-  const apiKey = process.env.MINIMAX_API_KEY || process.env.OPENAI_API_KEY;
+  const apiKey = gateway?.apiKey || process.env.MINIMAX_API_KEY || process.env.OPENAI_API_KEY;
   return { baseUrl, apiKey };
 };
 
@@ -67,8 +69,11 @@ export interface AsyncTaskResult {
 /**
  * 同步语音合成 - 直接返回音频
  */
-export const synthesize = async (options: TTSOptions): Promise<TTSResult> => {
-  const { baseUrl, apiKey } = getMinimaxConfig();
+export const synthesize = async (
+  options: TTSOptions,
+  gateway?: GatewayConfig
+): Promise<TTSResult> => {
+  const { baseUrl, apiKey } = getMinimaxConfig(gateway);
 
   if (!apiKey) {
     throw new Error('MiniMax API Key 未配置');
@@ -123,8 +128,11 @@ export const synthesize = async (options: TTSOptions): Promise<TTSResult> => {
 /**
  * 异步语音合成 - 创建任务
  */
-export const createAsyncTask = async (options: TTSOptions): Promise<string> => {
-  const { baseUrl, apiKey } = getMinimaxConfig();
+export const createAsyncTask = async (
+  options: TTSOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
+  const { baseUrl, apiKey } = getMinimaxConfig(gateway);
 
   if (!apiKey) {
     throw new Error('MiniMax API Key 未配置');
@@ -174,8 +182,11 @@ export const createAsyncTask = async (options: TTSOptions): Promise<string> => {
 /**
  * 查询异步任务状态
  */
-export const queryTask = async (taskId: string): Promise<AsyncTaskResult> => {
-  const { baseUrl, apiKey } = getMinimaxConfig();
+export const queryTask = async (
+  taskId: string,
+  gateway?: GatewayConfig
+): Promise<AsyncTaskResult> => {
+  const { baseUrl, apiKey } = getMinimaxConfig(gateway);
 
   if (!apiKey) {
     throw new Error('MiniMax API Key 未配置');
@@ -205,8 +216,11 @@ export const queryTask = async (taskId: string): Promise<AsyncTaskResult> => {
 /**
  * 获取文件下载信息
  */
-export const getFileInfo = async (fileId: string): Promise<{ url: string }> => {
-  const { baseUrl, apiKey } = getMinimaxConfig();
+export const getFileInfo = async (
+  fileId: string,
+  gateway?: GatewayConfig
+): Promise<{ url: string }> => {
+  const { baseUrl, apiKey } = getMinimaxConfig(gateway);
 
   if (!apiKey) {
     throw new Error('MiniMax API Key 未配置');
@@ -231,9 +245,10 @@ export const getFileInfo = async (fileId: string): Promise<{ url: string }> => {
  */
 export const synthesizeAsync = async (
   options: TTSOptions,
-  onProgress?: (status: string) => void
+  onProgress?: (status: string) => void,
+  gateway?: GatewayConfig
 ): Promise<TTSResult> => {
-  const taskId = await createAsyncTask(options);
+  const taskId = await createAsyncTask(options, gateway);
 
   // 轮询等待结果 (最多5分钟)
   const maxAttempts = 60;
@@ -243,7 +258,7 @@ export const synthesizeAsync = async (
     await wait(5000);
     attempts++;
 
-    const result = await queryTask(taskId);
+    const result = await queryTask(taskId, gateway);
     onProgress?.(result.status);
 
     if (result.status === 'success') {

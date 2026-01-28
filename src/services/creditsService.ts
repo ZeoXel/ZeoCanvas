@@ -12,18 +12,30 @@ import type {
 } from '@/types/credits';
 
 /**
- * 获取USERAPI基础URL
- */
-const getUserApiBaseUrl = (): string => {
-  return process.env.NEXT_PUBLIC_USERAPI_URL || 'http://localhost:3001';
-};
-
-/**
  * 从USERAPI获取积分余额
  */
 export const getCreditBalance = async (): Promise<CreditBalance> => {
   try {
-    return getCreditBalanceFromUserInfo();
+    const response = await fetch('/api/user/balance', { method: 'GET' });
+    if (!response.ok) {
+      throw new Error('Failed to fetch balance');
+    }
+
+    const result = await response.json();
+    if (!result?.success || !result?.data) {
+      throw new Error('Invalid balance response');
+    }
+
+    const total = Math.round((result.data.totalRecharge || 0) * 10);
+    const used = Math.round((result.data.apiConsumption || 0) * 10);
+    const remaining = Number(result.data.currentBalance || 0);
+
+    return {
+      total,
+      used,
+      remaining,
+      locked: 0,
+    };
   } catch (error) {
     console.error('Error fetching credit balance:', error);
     // 失败时回退到从用户信息获取

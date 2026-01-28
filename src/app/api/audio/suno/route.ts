@@ -10,6 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import * as sunoService from '@/services/providers/suno';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 // Route Segment Config
 export const maxDuration = 60; // 创建任务只需要很短时间
@@ -18,6 +19,15 @@ export const dynamic = 'force-dynamic';
 // POST: 提交生成任务
 export async function POST(request: NextRequest) {
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json(
+                { code: -1, message: '未分配可用的API Key' },
+                { status: 401 }
+            );
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
         const body = await request.json();
         const { mode, ...params } = body;
 
@@ -31,7 +41,7 @@ export async function POST(request: NextRequest) {
                 prompt: params.prompt || params.gpt_description_prompt,
                 make_instrumental: params.make_instrumental,
                 mv: params.mv,
-            });
+            }, { apiKey, baseUrl: gatewayBaseUrl });
         } else {
             // 自定义模式
             result = await sunoService.generateCustom({
@@ -43,7 +53,7 @@ export async function POST(request: NextRequest) {
                 make_instrumental: params.make_instrumental,
                 continue_clip_id: params.continue_clip_id,
                 continue_at: params.continue_at,
-            });
+            }, { apiKey, baseUrl: gatewayBaseUrl });
         }
 
         return NextResponse.json({
@@ -66,6 +76,15 @@ export async function POST(request: NextRequest) {
 // GET: 查询歌曲状态
 export async function GET(request: NextRequest) {
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json(
+                { code: -1, message: '未分配可用的API Key' },
+                { status: 401 }
+            );
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
         const { searchParams } = new URL(request.url);
         const ids = searchParams.get('ids');
 
@@ -77,7 +96,7 @@ export async function GET(request: NextRequest) {
         }
 
         const songIds = ids.split(',');
-        const result = await sunoService.querySongs(songIds);
+        const result = await sunoService.querySongs(songIds, { apiKey, baseUrl: gatewayBaseUrl });
 
         return NextResponse.json({
             code: 0,

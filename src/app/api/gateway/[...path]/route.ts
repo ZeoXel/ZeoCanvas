@@ -6,9 +6,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 const GATEWAY_BASE_URL = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
-const GATEWAY_API_KEY = process.env.OPENAI_API_KEY || '';
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -31,10 +31,11 @@ const buildTargetUrl = (request: NextRequest, path: string[]) => {
 };
 
 const forward = async (request: NextRequest, path: string[]) => {
-  if (!GATEWAY_API_KEY) {
+  const { apiKey } = await getAssignedGatewayKey();
+  if (!apiKey) {
     return NextResponse.json(
-      { error: 'Gateway API key not configured' },
-      { status: 500 }
+      { error: '未分配可用的API Key' },
+      { status: 401 }
     );
   }
 
@@ -44,7 +45,7 @@ const forward = async (request: NextRequest, path: string[]) => {
   for (const h of HOP_BY_HOP_HEADERS) {
     headers.delete(h);
   }
-  headers.set('Authorization', `Bearer ${GATEWAY_API_KEY}`);
+  headers.set('Authorization', `Bearer ${apiKey}`);
 
   const method = request.method.toUpperCase();
   const body = method === 'GET' || method === 'HEAD'

@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as viduService from '@/services/providers/vidu';
 import { smartUploadVideoServer, buildMediaPathServer } from '@/services/cosStorageServer';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 // Route Segment Config
 export const maxDuration = 60; // 创建任务只需要很短时间
@@ -21,6 +22,12 @@ export const dynamic = 'force-dynamic';
 // POST: 创建视频生成任务
 export async function POST(request: NextRequest) {
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json({ error: '未分配可用的API Key' }, { status: 401 });
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
         const body = await request.json();
         const {
             mode = 'img2video',
@@ -56,41 +63,41 @@ export async function POST(request: NextRequest) {
                     taskId = await viduService.text2video({
                         model, prompt, duration, aspect_ratio, resolution,
                         movement_amplitude, style, bgm, watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                     break;
 
                 case 'img2video':
                     taskId = await viduService.img2video({
                         model, images, prompt, duration, resolution,
                         movement_amplitude, audio, voice_id, watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                     break;
 
                 case 'start-end':
                     taskId = await viduService.startEnd2video({
                         model, images, prompt, duration, resolution,
                         movement_amplitude, bgm, watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                     break;
 
                 case 'multiframe':
                     taskId = await viduService.multiframe({
                         model, start_image, image_settings, resolution, watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                     break;
 
                 case 'reference':
                     taskId = await viduService.reference2video({
                         model, images, prompt, duration, aspect_ratio, resolution,
                         movement_amplitude, bgm, watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                     break;
 
                 case 'reference-audio':
                     taskId = await viduService.reference2videoAudio({
                         model, subjects, prompt, audio: true, duration, aspect_ratio,
                         resolution, movement_amplitude, watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                     break;
 
                 default:
@@ -129,7 +136,8 @@ export async function POST(request: NextRequest) {
             },
             (state) => {
                 console.log(`[Vidu API] Task state: ${state}`);
-            }
+            },
+            { apiKey, baseUrl: gatewayBaseUrl }
         );
 
         // 上传到 COS 存储（将临时 URL 转为永久存储）
@@ -157,6 +165,12 @@ export async function POST(request: NextRequest) {
 // GET: 查询任务状态
 export async function GET(request: NextRequest) {
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json({ error: '未分配可用的API Key' }, { status: 401 });
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
         const { searchParams } = new URL(request.url);
         const taskId = searchParams.get('task_id');
 
@@ -167,7 +181,7 @@ export async function GET(request: NextRequest) {
             );
         }
 
-        const result = await viduService.queryTask(taskId);
+        const result = await viduService.queryTask(taskId, { apiKey, baseUrl: gatewayBaseUrl });
         const creation = result.creations?.[0];
 
         // 如果任务成功且有视频 URL，上传到 COS

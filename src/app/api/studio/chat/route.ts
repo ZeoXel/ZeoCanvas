@@ -9,6 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 // API 配置
 const normalizeOpenAIBase = (baseUrl: string) => {
@@ -17,13 +18,12 @@ const normalizeOpenAIBase = (baseUrl: string) => {
 };
 
 const getApiConfig = () => {
-    const rawBaseUrl = process.env.OPENAI_API_BASE
+    const rawBaseUrl = process.env.GATEWAY_BASE_URL
+        || process.env.OPENAI_API_BASE
         || process.env.OPENAI_BASE_URL
-        || process.env.GATEWAY_BASE_URL
         || 'https://api.lsaigc.com';
     const baseUrl = normalizeOpenAIBase(rawBaseUrl);
-    const apiKey = process.env.OPENAI_API_KEY;
-    return { baseUrl, apiKey };
+    return { baseUrl };
 };
 
 // 根据模式获取系统提示词
@@ -99,10 +99,11 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'messages is required and must be an array' }, { status: 400 });
         }
 
-        const { baseUrl, apiKey } = getApiConfig();
+        const { baseUrl } = getApiConfig();
+        const { apiKey } = await getAssignedGatewayKey();
 
         if (!apiKey) {
-            return NextResponse.json({ error: 'API Key未配置' }, { status: 500 });
+            return NextResponse.json({ error: '未分配可用的API Key' }, { status: 401 });
         }
 
         // 判断是否有多模态内容

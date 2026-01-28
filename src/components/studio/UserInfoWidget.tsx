@@ -53,12 +53,17 @@ export const UserInfoWidget: React.FC<UserInfoWidgetProps> = ({
     const unsubscribe = onCreditsUpdated((detail) => {
       console.log('[UserInfoWidget] Credits updated:', detail);
       // 直接更新余额，而不是重新请求
-      setCreditBalance((prev) => ({
-        total: prev?.total ?? 0,
-        used: (prev?.used ?? 0) + detail.credits,
-        remaining: detail.balance,
-        locked: prev?.locked ?? 0,
-      }));
+      setCreditBalance((prev) => {
+        const nextTotal = detail.total ?? prev?.total ?? 0;
+        const nextUsed = detail.used ?? (prev?.used ?? 0) + detail.credits;
+        const nextRemaining = detail.remaining ?? detail.balance;
+        return {
+          total: nextTotal,
+          used: nextUsed,
+          remaining: nextRemaining,
+          locked: prev?.locked ?? 0,
+        };
+      });
     });
 
     return () => {

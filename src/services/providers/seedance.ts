@@ -9,11 +9,13 @@ import { handleApiError, wait, type VideoGenerationResult } from './shared';
 
 // ==================== 配置 ====================
 
-const getGatewayConfig = () => {
-  const baseUrl = process.env.OPENAI_BASE_URL
+type GatewayConfig = { baseUrl?: string; apiKey?: string };
+
+const getGatewayConfig = (gateway?: GatewayConfig) => {
+  const baseUrl = gateway?.baseUrl || process.env.OPENAI_BASE_URL
     || process.env.GATEWAY_BASE_URL
     || 'https://api.lsaigc.com';
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = gateway?.apiKey || process.env.OPENAI_API_KEY;
   return { baseUrl, apiKey };
 };
 
@@ -74,8 +76,11 @@ const normalizeTaskResult = (taskId: string, payload: any): SeedanceTaskResult =
 /**
  * 创建 Seedance 视频生成任务
  */
-export const createTask = async (options: SeedanceGenerateOptions): Promise<string> => {
-  const { baseUrl, apiKey } = getGatewayConfig();
+export const createTask = async (
+  options: SeedanceGenerateOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
+  const { baseUrl, apiKey } = getGatewayConfig(gateway);
 
   if (!apiKey) {
     throw new Error('API Key 未配置');
@@ -149,8 +154,8 @@ export const createTask = async (options: SeedanceGenerateOptions): Promise<stri
 /**
  * 查询 Seedance 任务状态
  */
-export const queryTask = async (taskId: string): Promise<SeedanceTaskResult> => {
-  const { baseUrl, apiKey } = getGatewayConfig();
+export const queryTask = async (taskId: string, gateway?: GatewayConfig): Promise<SeedanceTaskResult> => {
+  const { baseUrl, apiKey } = getGatewayConfig(gateway);
 
   if (!apiKey) {
     throw new Error('API Key 未配置');
@@ -177,9 +182,10 @@ export const queryTask = async (taskId: string): Promise<SeedanceTaskResult> => 
  */
 export const generateVideo = async (
   options: SeedanceGenerateOptions,
-  onProgress?: (status: string) => void
+  onProgress?: (status: string) => void,
+  gateway?: GatewayConfig
 ): Promise<VideoGenerationResult> => {
-  const taskId = await createTask(options);
+  const taskId = await createTask(options, gateway);
 
   // 轮询等待结果
   const maxAttempts = 120;  // 最多等待10分钟
@@ -189,7 +195,7 @@ export const generateVideo = async (
     await wait(5000);
     attempts++;
 
-    const result = await queryTask(taskId);
+    const result = await queryTask(taskId, gateway);
     onProgress?.(result.status);
 
     if (result.status === 'succeeded') {

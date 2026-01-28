@@ -10,6 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import * as minimaxService from '@/services/providers/minimax';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 // Route Segment Config
 export const maxDuration = 60; // 语音合成通常较快
@@ -18,6 +19,17 @@ export const dynamic = 'force-dynamic';
 // POST: 语音合成
 export async function POST(request: NextRequest) {
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json(
+                {
+                    base_resp: { status_code: -1, status_msg: '未分配可用的API Key' }
+                },
+                { status: 401 }
+            );
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
         const { searchParams } = new URL(request.url);
         const mode = searchParams.get('mode'); // 'async' 表示异步模式
         const body = await request.json();
@@ -31,7 +43,7 @@ export async function POST(request: NextRequest) {
                 model: body.model,
                 voice_setting: body.voice_setting,
                 audio_setting: body.audio_setting,
-            });
+            }, { apiKey, baseUrl: gatewayBaseUrl });
 
             return NextResponse.json({
                 base_resp: { status_code: 0, status_msg: 'success' },
@@ -46,7 +58,7 @@ export async function POST(request: NextRequest) {
             stream: body.stream,
             voice_setting: body.voice_setting,
             audio_setting: body.audio_setting,
-        });
+        }, { apiKey, baseUrl: gatewayBaseUrl });
 
         return NextResponse.json({
             base_resp: { status_code: 0, status_msg: 'success' },
@@ -74,13 +86,24 @@ export async function POST(request: NextRequest) {
 // GET: 查询异步任务状态
 export async function GET(request: NextRequest) {
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json(
+                {
+                    base_resp: { status_code: -1, status_msg: '未分配可用的API Key' }
+                },
+                { status: 401 }
+            );
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
         const { searchParams } = new URL(request.url);
         const taskId = searchParams.get('task_id');
         const fileId = searchParams.get('file_id');
 
         // 获取文件信息
         if (fileId) {
-            const fileInfo = await minimaxService.getFileInfo(fileId);
+            const fileInfo = await minimaxService.getFileInfo(fileId, { apiKey, baseUrl: gatewayBaseUrl });
             return NextResponse.json({
                 base_resp: { status_code: 0, status_msg: 'success' },
                 file: { download_url: fileInfo.url },
@@ -100,7 +123,7 @@ export async function GET(request: NextRequest) {
             );
         }
 
-        const result = await minimaxService.queryTask(taskId);
+        const result = await minimaxService.queryTask(taskId, { apiKey, baseUrl: gatewayBaseUrl });
 
         return NextResponse.json({
             base_resp: { status_code: 0, status_msg: 'success' },

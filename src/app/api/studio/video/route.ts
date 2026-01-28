@@ -13,6 +13,7 @@ import * as veoService from '@/services/providers/veo';
 import * as seedanceService from '@/services/providers/seedance';
 import * as viduService from '@/services/providers/vidu';
 import { smartUploadVideoServer, buildMediaPathServer } from '@/services/cosStorageServer';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 // Route Segment Config
 export const maxDuration = 60; // 创建任务只需要很短时间
@@ -43,6 +44,12 @@ export async function POST(request: NextRequest) {
         }
 
         const providerId = getVideoProviderId(model);
+        const { apiKey } = await getAssignedGatewayKey();
+
+        if (!apiKey) {
+            return NextResponse.json({ error: '未分配可用的API Key' }, { status: 401 });
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
 
         if (!providerId) {
             return NextResponse.json({ error: `不支持的视频模型: ${model}` }, { status: 400 });
@@ -61,7 +68,7 @@ export async function POST(request: NextRequest) {
                     duration,
                     enhancePrompt: config.enhance_prompt ?? enhancePrompt,
                     images,
-                });
+                }, { apiKey, baseUrl: gatewayBaseUrl });
                 break;
             }
 
@@ -79,7 +86,7 @@ export async function POST(request: NextRequest) {
                     watermark: config.watermark,
                     service_tier: config.service_tier,
                     seed: config.seed,
-                });
+                }, { apiKey, baseUrl: gatewayBaseUrl });
                 break;
             }
 
@@ -99,7 +106,7 @@ export async function POST(request: NextRequest) {
                         movement_amplitude: config.movement_amplitude as viduService.MovementAmplitude,
                         bgm: config.bgm,
                         watermark: config.watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                 } else if (images && images.length >= 2 && imageRoles?.includes('first_frame') && imageRoles?.includes('last_frame')) {
                     mode = 'start-end';
                     taskId = await viduService.startEnd2video({
@@ -111,7 +118,7 @@ export async function POST(request: NextRequest) {
                         movement_amplitude: config.movement_amplitude as viduService.MovementAmplitude,
                         bgm: config.bgm,
                         watermark: config.watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                 } else if (images && images.length > 0) {
                     mode = 'img2video';
                     taskId = await viduService.img2video({
@@ -122,7 +129,7 @@ export async function POST(request: NextRequest) {
                         resolution: config.resolution as viduService.Resolution,
                         movement_amplitude: config.movement_amplitude as viduService.MovementAmplitude,
                         watermark: config.watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                 } else {
                     taskId = await viduService.text2video({
                         model: model as viduService.ViduModel,
@@ -134,7 +141,7 @@ export async function POST(request: NextRequest) {
                         style: config.style as viduService.Style,
                         bgm: config.bgm,
                         watermark: config.watermark,
-                    });
+                    }, { apiKey, baseUrl: gatewayBaseUrl });
                 }
 
                 console.log(`[Studio Video API] Vidu mode: ${mode}`);
@@ -179,6 +186,11 @@ export async function GET(request: NextRequest) {
     }
 
     try {
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json({ error: '未分配可用的API Key' }, { status: 401 });
+        }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
         let status: string;
         let videoUrl: string | undefined;
         let error: string | undefined;
@@ -186,7 +198,7 @@ export async function GET(request: NextRequest) {
 
         switch (provider) {
             case 'veo': {
-                const result = await veoService.queryTask(taskId);
+                const result = await veoService.queryTask(taskId, { apiKey, baseUrl: gatewayBaseUrl });
                 status = result.status;
                 videoUrl = result.data?.output;
                 error = result.fail_reason;
@@ -195,7 +207,7 @@ export async function GET(request: NextRequest) {
             }
 
             case 'seedance': {
-                const result = await seedanceService.queryTask(taskId);
+                const result = await seedanceService.queryTask(taskId, { apiKey, baseUrl: gatewayBaseUrl });
                 // 映射状态
                 if (result.status === 'succeeded') status = 'SUCCESS';
                 else if (result.status === 'failed') status = 'FAILURE';
@@ -206,7 +218,7 @@ export async function GET(request: NextRequest) {
             }
 
             case 'vidu': {
-                const result = await viduService.queryTask(taskId);
+                const result = await viduService.queryTask(taskId, { apiKey, baseUrl: gatewayBaseUrl });
                 // 映射状态（优先检查 err_code，因为它可能在 state 不是 failed 时就出现）
                 if (result.err_code) {
                     status = 'FAILURE';

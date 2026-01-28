@@ -22,31 +22,37 @@ import { wait } from './shared';
 
 // ==================== 配置 ====================
 
-const getViduConfig = () => {
-  const baseUrl = process.env.OPENAI_BASE_URL
+type GatewayConfig = { baseUrl?: string; apiKey?: string };
+
+const getViduConfig = (gateway?: GatewayConfig) => {
+  const baseUrl = gateway?.baseUrl || process.env.OPENAI_BASE_URL
     || process.env.GATEWAY_BASE_URL
     || 'https://api.lsaigc.com';
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = gateway?.apiKey || process.env.OPENAI_API_KEY;
   return { baseUrl, apiKey };
 };
 
 const normalizeTaskResult = (taskId: string, payload: any): TaskResult => {
   const data = payload?.data ?? payload ?? {};
   const rawStatus = (data.status || data.state || data.task_status || '').toString();
-  const errorMsg = data.fail_reason || data.error || data.message;
+  const failReason = data.fail_reason;
+  const failReasonIsUrl = typeof failReason === 'string' && failReason.startsWith('http');
+  const errorMsg = failReasonIsUrl ? undefined : (failReason || data.error || data.message);
+
+  const videoUrl = data.data?.creations?.[0]?.url
+    || data.data?.output
+    || data.url
+    || (failReasonIsUrl ? failReason : undefined);
 
   let state: TaskState = 'processing';
   if (['SUCCESS', 'SUCCEEDED', 'DONE'].includes(rawStatus.toUpperCase()))
     state = 'success';
   else if (['FAILURE', 'FAILED', 'ERROR'].includes(rawStatus.toUpperCase()) || errorMsg)
     state = 'failed';
+  else if (videoUrl)
+    state = 'success';
   else if (['QUEUEING', 'QUEUED', 'CREATED'].includes(rawStatus.toUpperCase()))
     state = 'queueing';
-
-  const videoUrl = data.data?.creations?.[0]?.url
-    || data.data?.output
-    || data.url
-    || (typeof data.fail_reason === 'string' && data.fail_reason.startsWith('http') ? data.fail_reason : undefined);
 
   return {
     task_id: data.task_id || taskId,
@@ -57,8 +63,11 @@ const normalizeTaskResult = (taskId: string, payload: any): TaskResult => {
   };
 };
 
-const createGatewayTask = async (body: Record<string, any>): Promise<string> => {
-  const { baseUrl, apiKey } = getViduConfig();
+const createGatewayTask = async (
+  body: Record<string, any>,
+  gateway?: GatewayConfig
+): Promise<string> => {
+  const { baseUrl, apiKey } = getViduConfig(gateway);
 
   if (!apiKey) {
     throw new Error('API Key 未配置');
@@ -188,8 +197,8 @@ export interface VideoGenerationResult {
 /**
  * 查询任务状态
  */
-export const queryTask = async (taskId: string): Promise<TaskResult> => {
-  const { baseUrl, apiKey } = getViduConfig();
+export const queryTask = async (taskId: string, gateway?: GatewayConfig): Promise<TaskResult> => {
+  const { baseUrl, apiKey } = getViduConfig(gateway);
 
   if (!apiKey) {
     throw new Error('API Key 未配置');
@@ -213,7 +222,10 @@ export const queryTask = async (taskId: string): Promise<TaskResult> => {
 /**
  * 文生视频
  */
-export const text2video = async (options: Text2VideoOptions): Promise<string> => {
+export const text2video = async (
+  options: Text2VideoOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
   const body: any = {
     model: options.model,
     prompt: options.prompt,
@@ -229,13 +241,16 @@ export const text2video = async (options: Text2VideoOptions): Promise<string> =>
   if (options.watermark !== undefined) body.watermark = options.watermark;
   if (options.callback_url) body.callback_url = options.callback_url;
 
-  return createGatewayTask(body);
+  return createGatewayTask(body, gateway);
 };
 
 /**
  * 图生视频
  */
-export const img2video = async (options: Img2VideoOptions): Promise<string> => {
+export const img2video = async (
+  options: Img2VideoOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
   const body: any = {
     model: options.model,
     mode: 'img2video',
@@ -253,13 +268,16 @@ export const img2video = async (options: Img2VideoOptions): Promise<string> => {
   if (options.watermark !== undefined) body.watermark = options.watermark;
   if (options.callback_url) body.callback_url = options.callback_url;
 
-  return createGatewayTask(body);
+  return createGatewayTask(body, gateway);
 };
 
 /**
  * 首尾帧生成视频
  */
-export const startEnd2video = async (options: StartEnd2VideoOptions): Promise<string> => {
+export const startEnd2video = async (
+  options: StartEnd2VideoOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
   if (!options.images || options.images.length !== 2) {
     throw new Error('首尾帧需要提供2张图片');
   }
@@ -279,13 +297,16 @@ export const startEnd2video = async (options: StartEnd2VideoOptions): Promise<st
   if (options.watermark !== undefined) body.watermark = options.watermark;
   if (options.callback_url) body.callback_url = options.callback_url;
 
-  return createGatewayTask(body);
+  return createGatewayTask(body, gateway);
 };
 
 /**
  * 智能多帧生成视频
  */
-export const multiframe = async (options: MultiframeOptions): Promise<string> => {
+export const multiframe = async (
+  options: MultiframeOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
   if (!options.start_image) {
     throw new Error('智能多帧缺少首帧图片 (start_image)');
   }
@@ -311,13 +332,16 @@ export const multiframe = async (options: MultiframeOptions): Promise<string> =>
   if (options.watermark !== undefined) body.watermark = options.watermark;
   if (options.callback_url) body.callback_url = options.callback_url;
 
-  return createGatewayTask(body);
+  return createGatewayTask(body, gateway);
 };
 
 /**
  * 参考生视频 - 音视频直出 (带主体和台词)
  */
-export const reference2videoAudio = async (options: Reference2VideoAudioOptions): Promise<string> => {
+export const reference2videoAudio = async (
+  options: Reference2VideoAudioOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
   if (!options.subjects || options.subjects.length < 1) {
     throw new Error('参考生视频至少需要1个主体');
   }
@@ -341,13 +365,16 @@ export const reference2videoAudio = async (options: Reference2VideoAudioOptions)
   if (options.watermark !== undefined) body.watermark = options.watermark;
   if (options.callback_url) body.callback_url = options.callback_url;
 
-  return createGatewayTask(body);
+  return createGatewayTask(body, gateway);
 };
 
 /**
  * 参考生视频 - 视频直出 (主体一致性，可选BGM)
  */
-export const reference2video = async (options: Reference2VideoOptions): Promise<string> => {
+export const reference2video = async (
+  options: Reference2VideoOptions,
+  gateway?: GatewayConfig
+): Promise<string> => {
   if (!options.images || options.images.length < 1) {
     throw new Error('参考生视频至少需要1张参考图');
   }
@@ -371,7 +398,7 @@ export const reference2video = async (options: Reference2VideoOptions): Promise<
   if (options.watermark !== undefined) body.watermark = options.watermark;
   if (options.callback_url) body.callback_url = options.callback_url;
 
-  return createGatewayTask(body);
+  return createGatewayTask(body, gateway);
 };
 
 // ==================== 统一生成接口 ====================
@@ -404,7 +431,8 @@ export interface GenerateVideoOptions {
  */
 export const generateVideo = async (
   options: GenerateVideoOptions,
-  onProgress?: (state: string) => void
+  onProgress?: (state: string) => void,
+  gateway?: GatewayConfig
 ): Promise<VideoGenerationResult> => {
   let taskId: string;
 
@@ -421,7 +449,7 @@ export const generateVideo = async (
         style: options.style,
         bgm: options.bgm,
         watermark: options.watermark,
-      });
+      }, gateway);
       break;
 
     case 'img2video':
@@ -438,7 +466,7 @@ export const generateVideo = async (
         audio: options.audio,
         voice_id: options.voice_id,
         watermark: options.watermark,
-      });
+      }, gateway);
       break;
 
     case 'start-end':
@@ -454,7 +482,7 @@ export const generateVideo = async (
         movement_amplitude: options.movement_amplitude,
         bgm: options.bgm,
         watermark: options.watermark,
-      });
+      }, gateway);
       break;
 
     case 'multiframe':
@@ -467,7 +495,7 @@ export const generateVideo = async (
         image_settings: options.image_settings,
         resolution: options.resolution,
         watermark: options.watermark,
-      });
+      }, gateway);
       break;
 
     case 'reference':
@@ -484,7 +512,7 @@ export const generateVideo = async (
         movement_amplitude: options.movement_amplitude,
         bgm: options.bgm,
         watermark: options.watermark,
-      });
+      }, gateway);
       break;
 
     case 'reference-audio':
@@ -501,7 +529,7 @@ export const generateVideo = async (
         resolution: options.resolution,
         movement_amplitude: options.movement_amplitude,
         watermark: options.watermark,
-      });
+      }, gateway);
       break;
 
     default:
@@ -517,7 +545,7 @@ export const generateVideo = async (
     attempts++;
 
     try {
-      const result = await queryTask(taskId);
+      const result = await queryTask(taskId, gateway);
       onProgress?.(result.state);
 
       if (result.state === 'success') {

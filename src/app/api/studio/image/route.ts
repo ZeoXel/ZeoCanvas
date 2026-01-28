@@ -10,8 +10,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { generateImage } from '@/services/providers/image';
-import * as seedream from '@/services/providers/seedream';
 import { smartUploadBatchServer, buildMediaPathServer } from '@/services/cosStorageServer';
+import { getAssignedGatewayKey } from '@/lib/server/assignedKey';
 
 // Route Segment Config
 export const maxDuration = 60; // 图像生成通常较快
@@ -41,29 +41,24 @@ export async function POST(request: NextRequest) {
 
         let urls: string[];
 
-        // Seedream 使用火山引擎官方接口
-        if (usedModel.includes('seedream')) {
-            const result = await seedream.generateImage({
-                prompt,
-                model: usedModel,
-                images,
-                aspectRatio,
-                n,
-                size,
-            });
-            urls = result.urls;
-        } else {
-            // 其他模型使用 OpenAI 兼容网关
-            const result = await generateImage({
-                prompt,
-                model: usedModel,
-                images,
-                aspectRatio,
-                count: n,
-                imageSize,
-            });
-            urls = result.urls;
+        const { apiKey } = await getAssignedGatewayKey();
+        if (!apiKey) {
+            return NextResponse.json({ error: '未分配可用的API Key' }, { status: 401 });
         }
+        const gatewayBaseUrl = process.env.GATEWAY_BASE_URL || 'https://api.lsaigc.com';
+
+        const result = await generateImage({
+            prompt,
+            model: usedModel,
+            images,
+            aspectRatio,
+            size,
+            count: n,
+            imageSize,
+            apiKey,
+            baseUrl: gatewayBaseUrl,
+        });
+        urls = result.urls;
 
         // 上传到 COS 存储（将临时 URL 转为永久存储）
         // 使用统一路径结构: zeocanvas/{userId}/images/{filename}

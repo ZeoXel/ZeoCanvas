@@ -131,6 +131,35 @@ export class ApiKeyService {
     return data || []
   }
 
+  // 获取用户当前分配的密钥值
+  static async getAssignedKeyValueByUserId(userId: string, provider?: string): Promise<string | null> {
+    let query = supabaseAdmin
+      .from('api_keys')
+      .select('key_value, provider, status')
+      .eq('assigned_user_id', userId)
+      .eq('status', 'assigned')
+      .order('assigned_at', { ascending: false })
+      .limit(1)
+
+    if (provider) {
+      query = query.eq('provider', provider)
+    }
+
+    const { data, error } = await query
+
+    if (error) {
+      console.error('获取用户密钥失败:', error)
+      return null
+    }
+
+    const keyValue = data?.[0]?.key_value
+    if (!keyValue || !keyValue.startsWith('sk-')) {
+      return null
+    }
+
+    return keyValue
+  }
+
   // 创建新密钥（使用A000000格式）
   static async createApiKey(keyData: Omit<CreateApiKeyData, 'id'>): Promise<ApiKey> {
     try {

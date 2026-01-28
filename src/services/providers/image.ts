@@ -5,7 +5,7 @@
  * - nano-banana / nano-banana-pro: Nano Banana
  * - gemini-*: Gemini
  *
- * 注意: Seedream 使用独立的火山引擎官方接口，见 seedream.ts
+ * 注意: 所有模型统一走网关（由网关负责厂商路由）
  */
 
 import { getApiConfig, handleApiError, isGatewayProxyBaseUrl, type ImageGenerationResult } from './shared';
@@ -17,15 +17,19 @@ export interface ImageGenerateOptions {
   model: string;
   images?: string[];
   aspectRatio?: string;
+  size?: string;
   count?: number;
   imageSize?: '1K' | '2K' | '4K';  // NanoBanana
   responseFormat?: 'url' | 'b64_json';
+  apiKey?: string;
+  baseUrl?: string;
 }
 
 // ==================== 内部工具 ====================
 
-const getProviderFromModel = (model: string): 'nano-banana' | 'gemini' => {
+const getProviderFromModel = (model: string): 'nano-banana' | 'seedream' | 'gemini' => {
   if (model.includes('nano-banana')) return 'nano-banana';
+  if (model.includes('seedream') || model.includes('doubao-seedream')) return 'seedream';
   return 'gemini';
 };
 
@@ -36,20 +40,22 @@ const getProviderFromModel = (model: string): 'nano-banana' | 'gemini' => {
  */
 export const generateImage = async (options: ImageGenerateOptions): Promise<ImageGenerationResult> => {
   const { baseUrl, apiKey } = getApiConfig();
+  const resolvedBaseUrl = options.baseUrl || baseUrl;
+  const resolvedApiKey = options.apiKey ?? apiKey;
 
-  if (!apiKey && !isGatewayProxyBaseUrl(baseUrl)) {
+  if (!resolvedApiKey && !isGatewayProxyBaseUrl(resolvedBaseUrl)) {
     throw new Error('API Key未配置');
   }
 
   const provider = getProviderFromModel(options.model);
   const count = options.count || 1;
 
-  // nano-banana 需要通过批量请求实现组图生成
-  if (provider === 'nano-banana' && count > 1) {
+  // nano-banana / seedream 通过批量请求实现组图生成
+  if ((provider === 'nano-banana' || provider === 'seedream') && count > 1) {
     console.log(`[Image] Batch generating ${count} images with ${options.model}`);
 
     const requests = Array.from({ length: count }, () =>
-      generateSingleImage(baseUrl, apiKey, options, provider)
+      generateSingleImage(resolvedBaseUrl, resolvedApiKey || '', options, provider)
     );
 
     const results = await Promise.all(requests);
@@ -62,7 +68,7 @@ export const generateImage = async (options: ImageGenerateOptions): Promise<Imag
   }
 
   // 单图生成或 Gemini 模型
-  return generateSingleImage(baseUrl, apiKey, options, provider);
+  return generateSingleImage(resolvedBaseUrl, resolvedApiKey || '', options, provider);
 };
 
 /**
@@ -86,6 +92,9 @@ const generateSingleImage = async (
   }
   if (options.aspectRatio) {
     body.aspect_ratio = options.aspectRatio;
+  }
+  if (options.size) {
+    body.size = options.size;
   }
 
   // 厂商特定参数
